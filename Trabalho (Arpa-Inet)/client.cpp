@@ -24,7 +24,7 @@ int main(){
     // (2.1) A familia AF_INET indica uso de IPV4: 
     server_address.sin_family = AF_INET;
     // (2.2) htons() converte um inteiro para formato u_int16 (portas são representadas por valores deste tipo):
-    server_address.sin_port = htons(60000);
+    server_address.sin_port = htons(60001);
     // (2.3) inet_pton() converte um endereço de formato em texto ("localhost" ou "127.0.0.1") para seu formato em...
     // ... binário e armazena no buffer passado como parâmetro (server.sin_addr):
     inet_pton(AF_INET, "127.0.1.1", &server_address.sin_addr);

@@ -8,7 +8,21 @@
 #include <string>
 #include <pthread.h>
 
+// g++ server.cpp -pthread -o server && ./server
+
 using namespace std;
+
+void *runClient(void *arg);
+
+#define MAX_THREADS_NUM 50
+
+struct thread_arg{
+    int id;
+    int server_socket; 
+    int client_socket; 
+    sockaddr_in client; 
+    socklen_t client_size;
+};
 
 int main(){
 
@@ -23,7 +37,7 @@ int main(){
     // (2.1) A familia AF_INET indica uso de IPV4: 
     server.sin_family = AF_INET;
     // (2.2) htons() converte um inteiro para formato u_int16 (portas são representadas por valores deste tipo):
-    server.sin_port = htons(60000);
+    server.sin_port = htons(60001);
     // (2.3) inet_pton() converte um endereço de formato em texto ("localhost" ou "127.0.0.1") para seu formato em...
     // ... binário e armazena no buffer passado como parâmetro (server.sin_addr):
     inet_pton(AF_INET, "127.0.1.1", &server.sin_addr);
@@ -38,31 +52,54 @@ int main(){
         perror("[-] Could not start listening :(");
     }
 
-    // (4) Aceitar uma conexação:
-    // (4.1) Criando um endereço de socket para o cliente
     sockaddr_in client;
     socklen_t client_size = sizeof(client);
-    // (4.2) Buffers para o host name e server name (qual iremos obter mais adiante):
-    char host[NI_MAXHOST];
-    char serv[NI_MAXSERV];
 
-    int client_socket = accept(server_socket, (sockaddr *)&client, &client_size);
-    if(client_socket == -1){
-        perror("[-] Problem on accepting a connection");
+    // (4) Criando as threads para lidar com as conexões:
+    pthread_t threads[MAX_THREADS_NUM];
+    int actual_thread_id = 0;
+    int rc;
+
+    while(true){
+
+        if(actual_thread_id >= MAX_THREADS_NUM){
+            cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões!" << endl;
+            continue;
+        }
+
+        // (5) Aceitar uma conexação:
+        // (5.1) Criando um endereço de socket para o cliente:
+        struct thread_arg *info = (struct thread_arg *)malloc(sizeof(thread_arg));
+        int client_socket = accept(server_socket, (sockaddr *)&info->client, &info->client_size);
+
+        info->id = actual_thread_id;
+        info->client_socket = client_socket;
+
+        if(client_socket == -1){
+            perror("[-] Problem on accepting a connection");
+        }
+        else{
+            rc = pthread_create(&threads[actual_thread_id], NULL, runClient, (void *) info);
+            actual_thread_id++;
+        }
+
     }
 
-    // (4.3) Limpando os buffers e a variável de file descriptor (desassocia o arquivo do file descriptor):
     close(server_socket);
-    memset(host, 0, NI_MAXHOST);
-    memset(serv, 0, NI_MAXSERV);
+    return 0;
+}
 
-    // (5) Obtendo o nome do cliente:
-    // (5.1) A função getnameinfo() traduz um socket address para uma localização (nome) e um nome de serviço:
-    int result = getnameinfo((sockaddr *)&client_socket, client_size, host, NI_MAXHOST, serv, NI_MAXSERV, 0);
+void *runClient(void *arg){
 
-    if(result){
-        cout << "[+] " << host << " connected on " << serv << endl;
-    }
+    struct thread_arg *info;
+    info = (struct thread_arg *) arg; 
+
+    int id = info->id;
+    int server_socket = info->server_socket;
+    int client_socket = info->client_socket;
+    sockaddr_in client = info->client;
+    socklen_t client_size = info->client_size;
+    free(info);
 
     int BUFFER_SIZE = 4096;
     char buffer[BUFFER_SIZE];
@@ -73,13 +110,16 @@ int main(){
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
         if(bytes_received == -1){
             perror("[-] Erro na conexão :(");
+            close(server_socket);
+            pthread_exit(NULL);
         }
         else if(bytes_received == 0){
-            cout << "[+] Cliente desconectado :(" << endl;
+            cout << "[+] Cliente desconectado (thread = " << id << ")" << endl;
             break;
         }
         else if(strcmp(buffer, "bye") == 0){
             send(client_socket, "bye bro!", sizeof("bye bro"), 0);
+            break;
         }
         else{
             // (5.3) Reenviar mensagem para o cliente:
@@ -87,6 +127,8 @@ int main(){
         }
     }
 
-    cout << "Bye!" << endl;
-    return 0;
+    cout << "Bye client (thread " <<  id << ")" << endl;
+
+    close(client_socket);
+    pthread_exit(NULL);
 }
