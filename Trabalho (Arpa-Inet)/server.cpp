@@ -37,10 +37,10 @@ int main(){
     // (2.1) A familia AF_INET indica uso de IPV4: 
     server.sin_family = AF_INET;
     // (2.2) htons() converte um inteiro para formato u_int16 (portas são representadas por valores deste tipo):
-    server.sin_port = htons(60001);
+    server.sin_port = htons(60000);
     // (2.3) inet_pton() converte um endereço de formato em texto ("localhost" ou "127.0.0.1") para seu formato em...
     // ... binário e armazena no buffer passado como parâmetro (server.sin_addr):
-    inet_pton(AF_INET, "127.0.1.1", &server.sin_addr);
+    inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
     // inet_pton(AF_INET, "0.0.0.0", &server.sin_addr);
 
     if(bind(server_socket, (sockaddr*) &server, sizeof(server)) == -1){
@@ -49,7 +49,7 @@ int main(){
 
     // (3) Faz com que o socket possa aceitar um determinado número de conexões:
     if(listen(server_socket, SOMAXCONN) == -1){
-        perror("[-] Could not start listening :(");
+        perror("[-] Could not start listening :( \n");
     }
 
     sockaddr_in client;
