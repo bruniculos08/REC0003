@@ -65,19 +65,20 @@ int main(){
     // (2.1) A familia AF_INET indica uso de IPV4: 
     server_address.sin_family = AF_INET;
     // (2.2) htons() converte um inteiro para formato u_int16 (portas são representadas por valores deste tipo):
-    server_address.sin_port = htons(14832);
+    // server_address.sin_port = htons(14832);
+    server_address.sin_port = htons(60000);
     // server_address.sin_port = htons(19664);
 
     // (2.3) Encontra o endereço ipv4 por meio de requisição DNS:
-    char url[100] = "0.tcp.sa.ngrok.io:14832";
-    char *IPv4 = discoverIPv4(url, "14832");
-    cout << "IPv4 address found: " << IPv4 << endl;
+    // char url[100] = "0.tcp.sa.ngrok.io:14832";
+    // char *IPv4 = discoverIPv4(url, "14832");
+    // cout << "IPv4 address found: " << IPv4 << endl;
 
     // (2.4) inet_pton() converte um endereço de formato em texto ("localhost" ou "127.0.0.1") para seu formato em...
     // ... binário e armazena no buffer passado como parâmetro (server.sin_addr):
-    // inet_pton(AF_INET, "127.0.1.1", &server_address.sin_addr);
+    inet_pton(AF_INET, "127.0.0.1", &server_address.sin_addr);
     // inet_pton(AF_INET, "18.231.93.153", &server_address.sin_addr);
-    inet_pton(AF_INET, IPv4, &server_address.sin_addr);
+    // inet_pton(AF_INET, IPv4, &server_address.sin_addr);
 
     // (3) Conectar com o servidor:
     if(connect(my_socket, (sockaddr *)&server_address, sizeof(server_address)) == -1){
@@ -104,7 +105,7 @@ int main(){
         msg_len = recv(my_socket, receive_buffer, LEN, 0);
         cout << "[+] Server answer: " << receive_buffer << endl;
 
-        if(strcmp(receive_buffer, "bye") == 0 or strcmp(send_buffer, "bye") == 0){
+        if(strcmp(receive_buffer, "bye bro!") == 0 or strcmp(send_buffer, "bye") == 0){
             break;
         }
     }

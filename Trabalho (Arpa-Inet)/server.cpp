@@ -13,8 +13,13 @@
 using namespace std;
 
 void *runClient(void *arg);
+void *listenCommands(void *arg);
+int shutdownThreads(pthread_t *threads);
+string convertToString(char *array, int size);
 
 #define MAX_THREADS_NUM 50
+int threads_num = 0;
+int threads_flag = 0;
 
 struct thread_arg{
     int id;
@@ -60,6 +65,10 @@ int main(){
     int actual_thread_id = 0;
     int rc;
 
+    rc = pthread_create(&threads[actual_thread_id], NULL, listenCommands, (void *) threads);
+    actual_thread_id++;
+    
+
     while(true){
 
         if(actual_thread_id >= MAX_THREADS_NUM){
@@ -81,6 +90,7 @@ int main(){
         else{
             rc = pthread_create(&threads[actual_thread_id], NULL, runClient, (void *) info);
             actual_thread_id++;
+            threads_num++;
         }
 
     }
@@ -89,7 +99,15 @@ int main(){
     return 0;
 }
 
+void *initServer(void *arg){
+
+    return 0;
+}
+
+
 void *runClient(void *arg){
+
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
     struct thread_arg *info;
     info = (struct thread_arg *) arg; 
@@ -101,6 +119,8 @@ void *runClient(void *arg){
     socklen_t client_size = info->client_size;
     free(info);
 
+    // No buffer cabem 4096 bytes sendo assim teremos que transferir um arquivo em pedaços de...
+    // ... no máximo 4096 byes: 
     int BUFFER_SIZE = 4096;
     char buffer[BUFFER_SIZE];
     while(true){
@@ -117,7 +137,7 @@ void *runClient(void *arg){
             cout << "[+] Cliente desconectado (thread = " << id << ")" << endl;
             break;
         }
-        else if(strcmp(buffer, "bye") == 0){
+        else if(strcmp(buffer, "bye") == 0 || threads_flag == 1){
             send(client_socket, "bye bro!", sizeof("bye bro"), 0);
             break;
         }
@@ -131,4 +151,49 @@ void *runClient(void *arg){
 
     close(client_socket);
     pthread_exit(NULL);
+}
+
+void *listenCommands(void *arg){
+
+    pthread_t *threads;
+    threads = (pthread_t *) arg;
+
+    // Buffer para receber comandos dentro do terminal do servidor:
+    int BUFFER_SIZE = 4096;
+    char command_buffer[BUFFER_SIZE];
+    string command;
+    while(true){
+        // (5.2) Limpando o buffer para recebimento de comando:
+        memset(command_buffer, 0, BUFFER_SIZE);
+        // (5.3) Esperando um comando:
+        cout << "[+] Type some command: ";
+        cin >> command_buffer;
+
+        command = convertToString(command_buffer, strlen(command_buffer));
+        if(command == "shutdown"){
+            shutdownThreads(threads);
+            break;
+        }
+        
+    }
+
+    cout << "bye master!" << endl;
+    pthread_exit(NULL);
+}
+
+int shutdownThreads(pthread_t *threads){
+    int rc;
+    for(int i = 1; i <= threads_num; i++){
+        rc = pthread_cancel(threads[i]);
+        cout << "closing thread " << i << endl;
+    }
+    return rc;
+}
+
+string convertToString(char *array, int size){
+    string s = "";
+    for(int i = 0; i < size; i++){
+        s = s + array[i];
+    }
+    return s;
 }
