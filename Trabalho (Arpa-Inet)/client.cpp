@@ -98,19 +98,42 @@ int main(){
 
         // (4.1) Enviando uma mensagem para o servidor:
         cout << "[+] Type something to the server: ";
-        cin >> send_buffer;
 
+        // (4.2) Converte a entrada de string para um array de char:
+        string temp;
+        getline(cin, temp);
+        strcpy(send_buffer, temp.c_str());
+
+        // (4.3) Envia o que está no buffer de envio:
         send(my_socket, send_buffer, strlen(send_buffer), 0);
 
+        // (4.4) Recebe resposta do servidor:
         msg_len = recv(my_socket, receive_buffer, LEN, 0);
-        cout << "[+] Server answer: " << receive_buffer << endl;
 
         if(strcmp(receive_buffer, "bye bro!") == 0 or strcmp(send_buffer, "bye") == 0){
+            cout << "[+] Server answer: " << receive_buffer << endl;
             break;
         }
+        else if(strcmp(receive_buffer, "") == 0){
+            cout << "[+] Server has been shutdown... " << endl;
+            break;
+        }
+        else if(strcmp(receive_buffer, "list") == 0){
+            cout << "[+] List: " << endl;
+            while(!strcmp(receive_buffer, "end_list") == 0){
+                strcpy(send_buffer, "waiting");
+                send(my_socket, send_buffer, strlen(send_buffer), 0);
+                msg_len = recv(my_socket, receive_buffer, LEN, 0);
+            }
+        }
+        cout << "[+] Server answer: " << receive_buffer << endl;
     }
 
     close(my_socket);
     cout << "[+] Connection closed." << endl;
     return EXIT_SUCCESS;    
 }
+
+// int getList(int mysocket){
+    
+// }

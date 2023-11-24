@@ -7,19 +7,39 @@
 #include <string.h>
 #include <string>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <bits/stdc++.h>
+
 
 // g++ server.cpp -pthread -o server && ./server
 
 using namespace std;
 
 void *runClient(void *arg);
+void *initServer(void *arg);
 void *listenCommands(void *arg);
+
+int getThreadId(pthread_t *threads);
 int shutdownThreads(pthread_t *threads);
+int getElementIndex(vector<int> &A, int n);
+int sendListOfString(vector<string> &list, int client_socket);
+
 string convertToString(char *array, int size);
+vector<string> listDir(char dir[]);
+
+pthread_mutex_t mtx_thread_array; 
 
 #define MAX_THREADS_NUM 50
+// threads_num indica o número de threads ativas:
 int threads_num = 0;
+// threads_flag serve para comunicação entre as threads (ainda não utilizada):
 int threads_flag = 0;
+
+vector<int> in_use_thread_ids;
+vector<int> free_thread_ids;
 
 struct thread_arg{
     int id;
@@ -31,7 +51,33 @@ struct thread_arg{
 
 int main(){
 
-    // (1) Criar um socket:
+    // (1) Criando as threads (a primeira será a do listenCommands e a segunda a do servidor):
+    pthread_t threads[MAX_THREADS_NUM];
+    int rc;
+
+    // Obs.: o id 0 será sempre da thread listenCommands e o id 1 da thread initServer.
+
+    rc = pthread_create(&threads[0], NULL, listenCommands, (void *) threads);
+    threads_num++;
+
+    rc = pthread_create(&threads[1], NULL, initServer, (void *) threads);
+    threads_num++;
+
+    // (2) Espera a thread que ouve os comandos se encerrar pois se esta encerrou então todas as outras...
+    // ... foram encerradas. 
+    pthread_join(threads[0], NULL);
+
+    return 0;
+}
+
+void *initServer(void *arg){
+
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
+    pthread_t *threads;
+    threads = (pthread_t *) arg;
+
+     // (1) Criar um socket:
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if(server_socket == -1){
         perror("[-] Could not create socket :( \n");
@@ -60,18 +106,13 @@ int main(){
     sockaddr_in client;
     socklen_t client_size = sizeof(client);
 
-    // (4) Criando as threads para lidar com as conexões:
-    pthread_t threads[MAX_THREADS_NUM];
-    int actual_thread_id = 0;
+    // (4) A thread inicial dos clientes é a 2:
+    int actual_thread_id;
     int rc;
-
-    rc = pthread_create(&threads[actual_thread_id], NULL, listenCommands, (void *) threads);
-    actual_thread_id++;
-    
 
     while(true){
 
-        if(actual_thread_id >= MAX_THREADS_NUM){
+        if(threads_num >= MAX_THREADS_NUM){
             cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões!" << endl;
             continue;
         }
@@ -81,29 +122,30 @@ int main(){
         struct thread_arg *info = (struct thread_arg *)malloc(sizeof(thread_arg));
         int client_socket = accept(server_socket, (sockaddr *)&info->client, &info->client_size);
 
-        info->id = actual_thread_id;
         info->client_socket = client_socket;
 
         if(client_socket == -1){
             perror("[-] Problem on accepting a connection");
         }
         else{
+            // Aqui falta o mutex para colocar no vetor o id da thread e cuidar com o index menos 1 na função run:
+            pthread_mutex_lock(&mtx_thread_array);
+
+            actual_thread_id = getThreadId(threads);
+            info->id = actual_thread_id;
+            // pthread_join(threads[actual_thread_id], NULL);
             rc = pthread_create(&threads[actual_thread_id], NULL, runClient, (void *) info);
             actual_thread_id++;
             threads_num++;
+
+            pthread_mutex_unlock(&mtx_thread_array);
         }
 
     }
 
     close(server_socket);
-    return 0;
+    pthread_exit(NULL);
 }
-
-void *initServer(void *arg){
-
-    return 0;
-}
-
 
 void *runClient(void *arg){
 
@@ -134,12 +176,25 @@ void *runClient(void *arg){
             pthread_exit(NULL);
         }
         else if(bytes_received == 0){
-            cout << "[+] Cliente desconectado (thread = " << id << ")" << endl;
+            cout << "\n[+] Cliente desconectado (thread = " << id << ")" << endl;
+            cout.flush();
             break;
         }
-        else if(strcmp(buffer, "bye") == 0 || threads_flag == 1){
+        else if(strcmp(buffer, "bye") == 0){
             send(client_socket, "bye bro!", sizeof("bye bro"), 0);
             break;
+        }
+        else if(strcmp(buffer, "list") == 0){
+            // (5.4.1) Envia "list" ao cliente para avisar sobre o recebimento do comando:
+            send(client_socket, "list", sizeof("list"), 0);
+
+            // (5.4.2) Cria um vetor (lista) com os nomes dos arquivos no diretório:
+            char path[] = "/home/bruno/REC/Trabalho (Arpa-Inet)/ServerFiles/";
+            vector<string> file_list = listDir(path);
+            
+            // (5.4.3) Envia a lista:
+            int r = sendListOfString(file_list, client_socket);
+            if(r == 1) break;
         }
         else{
             // (5.3) Reenviar mensagem para o cliente:
@@ -147,7 +202,23 @@ void *runClient(void *arg){
         }
     }
 
-    cout << "Bye client (thread " <<  id << ")" << endl;
+    cout << "\nBye client (thread " << id << ")" << endl;
+    cout.flush();
+
+    pthread_mutex_lock(&mtx_thread_array);
+    cout << "Removing..." << endl;
+
+    int index = getElementIndex(in_use_thread_ids, id);
+
+    cout << "Removing index = " << index << endl;
+
+    in_use_thread_ids.erase(in_use_thread_ids.begin() + index);
+    free_thread_ids.push_back(id);
+
+    pthread_mutex_unlock(&mtx_thread_array);
+
+    cout << "[+] Type some command: ";
+    cout.flush();
 
     close(client_socket);
     pthread_exit(NULL);
@@ -183,9 +254,9 @@ void *listenCommands(void *arg){
 
 int shutdownThreads(pthread_t *threads){
     int rc;
-    for(int i = 1; i <= threads_num; i++){
+    for(int i = threads_num; i >= 1; i--){
         rc = pthread_cancel(threads[i]);
-        cout << "closing thread " << i << endl;
+        cout << "Closing thread " << i << endl;
     }
     return rc;
 }
@@ -196,4 +267,82 @@ string convertToString(char *array, int size){
         s = s + array[i];
     }
     return s;
+}
+
+vector<string> listDir(char dir[]){
+    DIR *d;
+
+    if(strcmp(dir, "") == 0) d = opendir(".");
+    else d = opendir(dir);
+    
+    printf("tipo \t| tipo de arquivo\n");
+    struct dirent *r;
+    r = readdir(d);
+    string file_name;
+    vector<string> dir_list;
+    
+    do{
+        file_name = convertToString(r->d_name, strlen(r->d_name));
+        dir_list.push_back(file_name);
+        // printf("%d \t| %s\n", r->d_type, r->d_name);
+        r = readdir(d);
+    }
+    while(r != NULL);
+    closedir(d);
+
+    return dir_list;
+}
+
+int sendListOfString(vector<string> &list, int client_socket){
+    int length;
+    char *recv_buffer = new char[100];
+    int bytes_received = recv(client_socket, recv_buffer, 100, 0);
+
+    for(string x : list){
+        length = x.length();
+        char *send_buffer = new char[length + 1];
+        strcpy(send_buffer, x.c_str());
+
+        bytes_received = recv(client_socket, recv_buffer, 100, 0);
+        if(bytes_received == 0){
+            return 1;
+        }
+        else if(strcmp(recv_buffer, "waiting") == 0){
+            send(client_socket, send_buffer, length + 1, 0);
+        }
+    }
+    return 0;
+}
+
+int getThreadId(pthread_t *threads){
+    // pthread_mutex_lock(&mtx_thread_array);
+
+    if(in_use_thread_ids.size() == 0){
+        pthread_mutex_unlock(&mtx_thread_array);
+        in_use_thread_ids.push_back(2);
+        return 2;
+    }
+    else if(free_thread_ids.size() == 0){
+        int last = in_use_thread_ids.back();
+        in_use_thread_ids.push_back(last+1);
+        pthread_mutex_unlock(&mtx_thread_array);
+        return last+1;
+    }
+   
+    int last_free = free_thread_ids.back();
+    
+    pthread_join(threads[last_free], NULL);
+    
+    free_thread_ids.pop_back();
+    in_use_thread_ids.push_back(last_free);
+    
+    // pthread_mutex_unlock(&mtx_thread_array);
+    return last_free;
+}
+
+int getElementIndex(vector<int> &A, int n){
+    for(int i = 0; i < A.size(); i++){
+        if(n == A[i]) return i;
+    }
+    return -1;
 }
