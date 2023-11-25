@@ -30,7 +30,7 @@ int sendListOfString(vector<string> &list, int client_socket);
 string convertToString(char *array, int size);
 vector<string> listDir(char dir[]);
 
-pthread_mutex_t mtx_thread_array; 
+pthread_mutex_t mtx_thread_info; 
 
 #define MAX_THREADS_NUM 50
 // threads_num indica o número de threads ativas:
@@ -55,12 +55,13 @@ int main(){
     pthread_t threads[MAX_THREADS_NUM];
     int rc;
 
-    // Obs.: o id 0 será sempre da thread listenCommands e o id 1 da thread initServer.
+    // Obs.: o id 0 será sempre da thread listenCommands (e não precisa ser listado) e o id 1 da thread initServer.
 
     rc = pthread_create(&threads[0], NULL, listenCommands, (void *) threads);
     threads_num++;
 
     rc = pthread_create(&threads[1], NULL, initServer, (void *) threads);
+    in_use_thread_ids.push_back(1);
     threads_num++;
 
     // (2) Espera a thread que ouve os comandos se encerrar pois se esta encerrou então todas as outras...
@@ -128,17 +129,16 @@ void *initServer(void *arg){
             perror("[-] Problem on accepting a connection");
         }
         else{
-            // Aqui falta o mutex para colocar no vetor o id da thread e cuidar com o index menos 1 na função run:
-            pthread_mutex_lock(&mtx_thread_array);
+            // (5.2) Aqui falta o mutex para colocar no vetor o id da thread e cuidar com o index menos 1 na função run:
+            pthread_mutex_lock(&mtx_thread_info);
 
             actual_thread_id = getThreadId(threads);
             info->id = actual_thread_id;
-            // pthread_join(threads[actual_thread_id], NULL);
             rc = pthread_create(&threads[actual_thread_id], NULL, runClient, (void *) info);
             actual_thread_id++;
             threads_num++;
 
-            pthread_mutex_unlock(&mtx_thread_array);
+            pthread_mutex_unlock(&mtx_thread_info);
         }
 
     }
@@ -162,7 +162,7 @@ void *runClient(void *arg){
     free(info);
 
     // No buffer cabem 4096 bytes sendo assim teremos que transferir um arquivo em pedaços de...
-    // ... no máximo 4096 byes: 
+    // ... no máximo 4095 byes: 
     int BUFFER_SIZE = 4096;
     char buffer[BUFFER_SIZE];
     while(true){
@@ -173,7 +173,8 @@ void *runClient(void *arg){
         if(bytes_received == -1){
             perror("[-] Erro na conexão :(");
             close(server_socket);
-            pthread_exit(NULL);
+            // pthread_exit(NULL);
+            break;
         }
         else if(bytes_received == 0){
             cout << "\n[+] Cliente desconectado (thread = " << id << ")" << endl;
@@ -184,9 +185,14 @@ void *runClient(void *arg){
             send(client_socket, "bye bro!", sizeof("bye bro"), 0);
             break;
         }
-        else if(strcmp(buffer, "list") == 0){
+
+        // string command;
+        // command = convertToString(buffer, strlen(buffer));
+        // vector<string> tokens = getTokens(command, ' ');
+
+        if(strcmp(buffer, "list") == 0){
             // (5.4.1) Envia "list" ao cliente para avisar sobre o recebimento do comando:
-            send(client_socket, "list", sizeof("list"), 0);
+            send(client_socket, "list", sizeof("list") + 1, 0);
 
             // (5.4.2) Cria um vetor (lista) com os nomes dos arquivos no diretório:
             char path[] = "/home/bruno/REC/Trabalho (Arpa-Inet)/ServerFiles/";
@@ -205,17 +211,13 @@ void *runClient(void *arg){
     cout << "\nBye client (thread " << id << ")" << endl;
     cout.flush();
 
-    pthread_mutex_lock(&mtx_thread_array);
-    cout << "Removing..." << endl;
+    pthread_mutex_lock(&mtx_thread_info);
 
     int index = getElementIndex(in_use_thread_ids, id);
-
-    cout << "Removing index = " << index << endl;
-
     in_use_thread_ids.erase(in_use_thread_ids.begin() + index);
     free_thread_ids.push_back(id);
 
-    pthread_mutex_unlock(&mtx_thread_array);
+    pthread_mutex_unlock(&mtx_thread_info);
 
     cout << "[+] Type some command: ";
     cout.flush();
@@ -229,7 +231,7 @@ void *listenCommands(void *arg){
     pthread_t *threads;
     threads = (pthread_t *) arg;
 
-    // Buffer para receber comandos dentro do terminal do servidor:
+    // (5.1) Buffer para receber comandos dentro do terminal do servidor:
     int BUFFER_SIZE = 4096;
     char command_buffer[BUFFER_SIZE];
     string command;
@@ -241,11 +243,15 @@ void *listenCommands(void *arg){
         cin >> command_buffer;
 
         command = convertToString(command_buffer, strlen(command_buffer));
+
         if(command == "shutdown"){
+            pthread_mutex_lock(&mtx_thread_info);
             shutdownThreads(threads);
+            pthread_mutex_unlock(&mtx_thread_info);
             break;
         }
         
+
     }
 
     cout << "bye master!" << endl;
@@ -254,9 +260,9 @@ void *listenCommands(void *arg){
 
 int shutdownThreads(pthread_t *threads){
     int rc;
-    for(int i = threads_num; i >= 1; i--){
-        rc = pthread_cancel(threads[i]);
-        cout << "Closing thread " << i << endl;
+    for(int x : in_use_thread_ids){
+        rc = pthread_cancel(threads[x]);
+        cout << "Closing thread " << x << endl;
     }
     return rc;
 }
@@ -284,7 +290,6 @@ vector<string> listDir(char dir[]){
     do{
         file_name = convertToString(r->d_name, strlen(r->d_name));
         dir_list.push_back(file_name);
-        // printf("%d \t| %s\n", r->d_type, r->d_name);
         r = readdir(d);
     }
     while(r != NULL);
@@ -315,17 +320,18 @@ int sendListOfString(vector<string> &list, int client_socket){
 }
 
 int getThreadId(pthread_t *threads){
-    // pthread_mutex_lock(&mtx_thread_array);
+    // (1) Antes de se executar essa função deve ser se bloqueado o mutex sobre...
+    // ... os vetores de ids:
 
     if(in_use_thread_ids.size() == 0){
-        pthread_mutex_unlock(&mtx_thread_array);
+        pthread_mutex_unlock(&mtx_thread_info);
         in_use_thread_ids.push_back(2);
         return 2;
     }
     else if(free_thread_ids.size() == 0){
         int last = in_use_thread_ids.back();
         in_use_thread_ids.push_back(last+1);
-        pthread_mutex_unlock(&mtx_thread_array);
+        pthread_mutex_unlock(&mtx_thread_info);
         return last+1;
     }
    
@@ -336,7 +342,6 @@ int getThreadId(pthread_t *threads){
     free_thread_ids.pop_back();
     in_use_thread_ids.push_back(last_free);
     
-    // pthread_mutex_unlock(&mtx_thread_array);
     return last_free;
 }
 
@@ -345,4 +350,14 @@ int getElementIndex(vector<int> &A, int n){
         if(n == A[i]) return i;
     }
     return -1;
+}
+
+vector<string> getTokens(string phrase, char delimiter){
+    stringstream command(phrase);
+    string token;
+    vector<string> tokens;
+    while(getline(command, token, delimiter)){
+        tokens.push_back(token);
+    }
+    return tokens;
 }

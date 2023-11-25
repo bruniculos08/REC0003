@@ -6,10 +6,44 @@
 #include <arpa/inet.h>
 #include <string.h>
 #include <string>
+#include <bits/stdc++.h>
 
 using namespace std;
 
+template <char C>
+std::istream& expect(std::istream& in)
+{
+    if ((in >> std::ws).peek() == C) {
+        in.ignore();
+    }
+    else {
+        in.setstate(std::ios_base::failbit);
+    }
+    return in;
+}
+
 int main(void){
+
+    char temp[] = "a /home/bruno/REC/Trabalho (Arpa-Inet)/find.cpp \\";
+    // getline(cin, temp);
+    // stringstream command(temp);
+    // string token;
+    // vector<string> tokens;
+    // while(getline(command, token, ',')){
+    //     tokens.push_back(token);
+    // }
+    // cout << tokens.size() << endl;
+
+    char temp1[100];
+    char temp2[100];
+
+    sscanf(temp, "%s %[^\n]", temp1, temp2);
+
+    cout << temp1 << endl;
+    cout << temp2 << endl;
+    return 0;
+
+
     struct addrinfo* res = NULL;
     getaddrinfo("0.tcp.sa.ngrok.io", "19664", 0, &res);
 
