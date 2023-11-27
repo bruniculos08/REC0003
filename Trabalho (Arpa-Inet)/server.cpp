@@ -11,10 +11,10 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <regex>
 #include <bits/stdc++.h>
 
-
-// g++ server.cpp -pthread -o server && ./server
+// g++ server.cpp -pthread -lstdc++fs -o server && ./server
 
 using namespace std;
 
@@ -22,23 +22,37 @@ void *runClient(void *arg);
 void *initServer(void *arg);
 void *listenCommands(void *arg);
 
-int getThreadId(pthread_t *threads);
+int getThreadId(pthread_t *threads, int client_socket);
 int shutdownThreads(pthread_t *threads);
 int getElementIndex(vector<int> &A, int n);
 int sendListOfString(vector<string> &list, int client_socket);
+int getUpload(int client_socket, FILE *fptr);
+int sendDownload(int client_socket, FILE *fptr);
+
+FILE *existsFile(char path[], char file_name[]);
+FILE *openFile(char path[], char file_name[]);
+
+regex upload_pattern{"upload [^/]+"};
+regex delete_pattern{"delete [^/]+"};
+regex download_pattern{"download [^/]+[.][a-zA-Z0-9]+ [^]+"};
+regex list_pattern{"list[ ]*"};
+regex exit_pattern{"exit[ ]*"};
+regex invalid_file{"[. ]+"};
+char server_dir[] = "/home/bruno/REC/Trabalho (Arpa-Inet)/ServerFiles/";
 
 string convertToString(char *array, int size);
 vector<string> listDir(char dir[]);
 
 pthread_mutex_t mtx_thread_info; 
 
-#define MAX_THREADS_NUM 50
-// threads_num indica o número de threads ativas:
-int threads_num = 0;
+#define LEN 4096
+#define MAX_THREADS_NUM 20
 // threads_flag serve para comunicação entre as threads (ainda não utilizada):
 int threads_flag = 0;
+int connection_flag = 0;
 
 vector<int> in_use_thread_ids;
+vector<int> in_use_client_sockets;
 vector<int> free_thread_ids;
 
 struct thread_arg{
@@ -57,18 +71,20 @@ int main(){
 
     // Obs.: o id 0 será sempre da thread listenCommands (e não precisa ser listado) e o id 1 da thread initServer.
 
+    pthread_mutex_lock(&mtx_thread_info);
+    
     rc = pthread_create(&threads[0], NULL, listenCommands, (void *) threads);
-    threads_num++;
 
+    // in_use_thread_ids.push_back(1);
     rc = pthread_create(&threads[1], NULL, initServer, (void *) threads);
-    in_use_thread_ids.push_back(1);
-    threads_num++;
+    
+    pthread_mutex_unlock(&mtx_thread_info);
 
     // (2) Espera a thread que ouve os comandos se encerrar pois se esta encerrou então todas as outras...
     // ... foram encerradas. 
     pthread_join(threads[0], NULL);
 
-    return 0;
+    exit(0);
 }
 
 void *initServer(void *arg){
@@ -78,11 +94,18 @@ void *initServer(void *arg){
     pthread_t *threads;
     threads = (pthread_t *) arg;
 
-     // (1) Criar um socket:
+    // (1) Criar um socket:
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if(server_socket == -1){
         perror("[-] Could not create socket :( \n");
     }
+
+    pthread_mutex_lock(&mtx_thread_info);
+
+    in_use_client_sockets.push_back(server_socket);
+
+    pthread_mutex_unlock(&mtx_thread_info);
+
 
     // (2) Vincular (Bind) o socket a um IP e uma porta:
     sockaddr_in server;
@@ -96,7 +119,9 @@ void *initServer(void *arg){
     // inet_pton(AF_INET, "0.0.0.0", &server.sin_addr);
 
     if(bind(server_socket, (sockaddr*) &server, sizeof(server)) == -1){
-        perror("[-] Could not bind IP/port :( \n");
+        perror("\n[-] Could not bind IP/port :( \n");
+        pthread_cancel(threads[0]);
+        pthread_exit(NULL);
     }
 
     // (3) Faz com que o socket possa aceitar um determinado número de conexões:
@@ -106,17 +131,18 @@ void *initServer(void *arg){
 
     sockaddr_in client;
     socklen_t client_size = sizeof(client);
-
-    // (4) A thread inicial dos clientes é a 2:
-    int actual_thread_id;
     int rc;
 
     while(true){
 
-        if(threads_num >= MAX_THREADS_NUM){
-            cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões!" << endl;
+        // O vetor in_use_thread_ids não está sendo limpado de maneira correta:
+        pthread_mutex_lock(&mtx_thread_info);
+        if(in_use_thread_ids.size() > MAX_THREADS_NUM){
+            cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões (" << in_use_thread_ids.size() << ") !" << endl;
+            pthread_mutex_unlock(&mtx_thread_info);
             continue;
         }
+        pthread_mutex_unlock(&mtx_thread_info);
 
         // (5) Aceitar uma conexação:
         // (5.1) Criando um endereço de socket para o cliente:
@@ -132,18 +158,22 @@ void *initServer(void *arg){
             // (5.2) Aqui falta o mutex para colocar no vetor o id da thread e cuidar com o index menos 1 na função run:
             pthread_mutex_lock(&mtx_thread_info);
 
-            actual_thread_id = getThreadId(threads);
-            info->id = actual_thread_id;
-            rc = pthread_create(&threads[actual_thread_id], NULL, runClient, (void *) info);
-            actual_thread_id++;
-            threads_num++;
+            info->id = getThreadId(threads, client_socket);
+            rc = pthread_create(&threads[info->id], NULL, runClient, (void *) info);
 
             pthread_mutex_unlock(&mtx_thread_info);
         }
 
     }
 
+    pthread_mutex_lock(&mtx_thread_info);
+
+    int index = getElementIndex(in_use_client_sockets, server_socket);
+    in_use_client_sockets.erase(in_use_client_sockets.begin() + index);
     close(server_socket);
+
+    pthread_mutex_unlock(&mtx_thread_info);
+
     pthread_exit(NULL);
 }
 
@@ -166,63 +196,155 @@ void *runClient(void *arg){
     int BUFFER_SIZE = 4096;
     char buffer[BUFFER_SIZE];
     while(true){
-        // (5.2) Limpando o buffer para recebimento de mensagem:
+        // (2) Limpando o buffer para recebimento de mensagem:
         memset(buffer, 0, BUFFER_SIZE);
-        // (5.3) Esperando uma mensagem:
+        
+        // (3) Esperando uma mensagem:
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
+
+        // (4) Erro de conexão:
         if(bytes_received == -1){
-            perror("[-] Erro na conexão :(");
-            close(server_socket);
+            // perror("[-] Erro na conexão :(\n");
+            cout << "[-] Erro na conexão :(" << endl;
+            cout.flush();
+            close(client_socket);
             // pthread_exit(NULL);
             break;
         }
+        // (5) Cliente desconectado:
         else if(bytes_received == 0){
             cout << "\n[+] Cliente desconectado (thread = " << id << ")" << endl;
             cout.flush();
             break;
         }
-        else if(strcmp(buffer, "bye") == 0){
+        // (6) Comando para desconectar:
+        else if(regex_match(buffer, exit_pattern)){
             send(client_socket, "bye bro!", sizeof("bye bro"), 0);
             break;
         }
+        // (7) Comando list:
+        else if(regex_match(buffer, list_pattern)){
 
-        // string command;
-        // command = convertToString(buffer, strlen(buffer));
-        // vector<string> tokens = getTokens(command, ' ');
-
-        if(strcmp(buffer, "list") == 0){
-            // (5.4.1) Envia "list" ao cliente para avisar sobre o recebimento do comando:
-            send(client_socket, "list", sizeof("list") + 1, 0);
-
-            // (5.4.2) Cria um vetor (lista) com os nomes dos arquivos no diretório:
+            // (7.1) Cria um vetor (lista) com os nomes dos arquivos no diretório:
             char path[] = "/home/bruno/REC/Trabalho (Arpa-Inet)/ServerFiles/";
             vector<string> file_list = listDir(path);
-            
-            // (5.4.3) Envia a lista:
+
+            // (7.2) Envia a lista:
             int r = sendListOfString(file_list, client_socket);
-            if(r == 1) break;
+            if(r == 1){
+                cout << "\n[+] Erro ao tentar enviar list (thread = " << id << ")" << endl; 
+                cout.flush();
+                break;
+            }
+        }
+        // (8) Comando de upload:
+        else if(regex_match(buffer, upload_pattern)){
+            // (8.1) Obtém o nome do arquivo:
+            char command[sizeof("update")];
+            char file_name[256];
+            sscanf(buffer, "%s %[^\n]", command, file_name);
+            // (8.2) Cria ou sobrescreve o arquivo:
+            FILE *fptr;
+            fptr = openFile(server_dir, file_name);
+            // (8.3) Chama a função para obter o upload:
+            int flag = getUpload(client_socket, fptr);
+            fclose(fptr);
+        }
+        else if(regex_match(buffer, delete_pattern)){
+            // (9.1) Obtém o nome do arquivo:
+            char command[sizeof("delete")];
+            char file_name[256];
+            sscanf(buffer, "%s %[^\n]", command, file_name);   
+
+            if(regex_match(file_name, invalid_file)){
+                send(client_socket, "Invalid file name", sizeof("Invalid file name"), 0);
+                continue;
+            }
+            
+            // (9.2)
+            char file_path[strlen(file_name) + strlen(server_dir) + 1];
+            strcpy(file_path, server_dir);
+            strcat(file_path, file_name);
+
+            int flag = remove(file_path);
+
+            if(flag == 0){
+                send(client_socket, "File deleted successfully", sizeof("File deleted successfully"), 0);
+            }
+            else{
+                send(client_socket, "Error trying to delete file", sizeof("Error trying to delete file"), 0);
+            }
+            continue;
+        }
+        // (9) Comando de download:
+        else if(regex_match(buffer, download_pattern)){
+            // (9.1) Obtém o nome do arquivo e sua extensão:
+            char command[sizeof("download")];
+            char file_init[256];
+            char file_ext[256];
+            char path[256];
+            sscanf(buffer, "%s %[^.]%[^ ] %[^\n]", command, file_init, file_ext, path);
+
+            // (9.2) Remonta o nome do arquivo a ser baixado (com sua extensão):
+            char file_name[strlen(file_init) + strlen(file_ext) + 1];
+            // Obs.: o tamanho do char array deve-ser o número de caracteres + 1 (provavelmente pois termina...
+            // ... com char "\0").
+            strcpy(file_name, file_init);
+            strcat(file_name, file_ext);
+
+            // (9.3) Os seguintes arquivos existem porém não são válidos, assim o servidor deve enviar "No":
+            if(regex_match(file_name, invalid_file)){
+                send(client_socket, "No", sizeof("No"), 0);
+                continue;
+            }
+
+            // (9.4) Verifica se o arquivo existe:
+            FILE *fptr = existsFile(server_dir, file_name);
+            if(fptr == NULL){
+                send(client_socket, "No", sizeof("No"), 0);
+                fclose(fptr);
+            }
+            else{
+                send(client_socket, "Yes", sizeof("Yes"), 0);
+                int flag = sendDownload(client_socket, fptr);
+                fclose(fptr);
+                if(flag == 1){
+                    break;
+                }
+            }
         }
         else{
             // (5.3) Reenviar mensagem para o cliente:
             send(client_socket, buffer, bytes_received + 1, 0);
+            // Note que se no buffer a palavra contém n caracteres (ex.: "ab" contém 2 caracteres) deve-se enviar como...
+            // ... n + 1 de tamanho.
         }
     }
 
     cout << "\nBye client (thread " << id << ")" << endl;
     cout.flush();
 
+    // (6) Antes de encerrar a thread para se alterar quaisquer estrutura que guarde informações sobre as...
+    // ... threads deve-se bloquer o mutex mtx_thread_info:
     pthread_mutex_lock(&mtx_thread_info);
+    int index;
 
-    int index = getElementIndex(in_use_thread_ids, id);
+    // (6.1) Remove o id da thread do vetor de id's em uso:
+    index = getElementIndex(in_use_thread_ids, id);
     in_use_thread_ids.erase(in_use_thread_ids.begin() + index);
     free_thread_ids.push_back(id);
+
+    // (6.2) Remove o client socket da thread do vetor de client sockets em uso (aqui que ocorreu o problema...
+    // ... "double free or corruption (out) \nAbort" pois estava fazendo erase no vetor de id's):
+    close(client_socket);
+    index = getElementIndex(in_use_client_sockets, client_socket);
+    in_use_client_sockets.erase(in_use_client_sockets.begin() + index);
 
     pthread_mutex_unlock(&mtx_thread_info);
 
     cout << "[+] Type some command: ";
     cout.flush();
 
-    close(client_socket);
     pthread_exit(NULL);
 }
 
@@ -231,18 +353,22 @@ void *listenCommands(void *arg){
     pthread_t *threads;
     threads = (pthread_t *) arg;
 
-    // (5.1) Buffer para receber comandos dentro do terminal do servidor:
+    // (5.1) Buffer para receber comandos dentro do terminal do servidor (não utilizado):
     int BUFFER_SIZE = 4096;
     char command_buffer[BUFFER_SIZE];
     string command;
+    
     while(true){
         // (5.2) Limpando o buffer para recebimento de comando:
         memset(command_buffer, 0, BUFFER_SIZE);
         // (5.3) Esperando um comando:
         cout << "[+] Type some command: ";
-        cin >> command_buffer;
+        cout.flush();
 
-        command = convertToString(command_buffer, strlen(command_buffer));
+        // (5.4) Recebe a entrada com string class com getline() para obter toda a entrada...
+        // ... (não terminando no primeiro espaço em branco):
+        getline(cin, command);
+        cin.clear();
 
         if(command == "shutdown"){
             pthread_mutex_lock(&mtx_thread_info);
@@ -250,8 +376,6 @@ void *listenCommands(void *arg){
             pthread_mutex_unlock(&mtx_thread_info);
             break;
         }
-        
-
     }
 
     cout << "bye master!" << endl;
@@ -260,10 +384,15 @@ void *listenCommands(void *arg){
 
 int shutdownThreads(pthread_t *threads){
     int rc;
+    for(int x : in_use_client_sockets){
+        close(x);
+        cout << "Closing client socket " << x << endl;
+    }
     for(int x : in_use_thread_ids){
         rc = pthread_cancel(threads[x]);
         cout << "Closing thread " << x << endl;
     }
+    rc = pthread_cancel(threads[1]);
     return rc;
 }
 
@@ -281,7 +410,7 @@ vector<string> listDir(char dir[]){
     if(strcmp(dir, "") == 0) d = opendir(".");
     else d = opendir(dir);
     
-    printf("tipo \t| tipo de arquivo\n");
+    // printf("tipo \t| tipo de arquivo\n");
     struct dirent *r;
     r = readdir(d);
     string file_name;
@@ -299,44 +428,77 @@ vector<string> listDir(char dir[]){
 }
 
 int sendListOfString(vector<string> &list, int client_socket){
-    int length;
-    char *recv_buffer = new char[100];
-    int bytes_received = recv(client_socket, recv_buffer, 100, 0);
+
+    // (0) Cria o char array com a string de número aleatório:
+    string random_check_string = to_string(rand());
+    int random_check_lenght = random_check_string.length();
+    char random_check[random_check_lenght + 1];
+    strcpy(random_check, random_check_string.c_str());
+
+    // (1) Cria os buffers:
+    int word_length;
+    int bytes_received;
+    char *receive_buffer = new char[LEN];
+    char *send_buffer = new char[LEN];
+        
+    // (2) Envia e recebe o número aleatório (este número ira servir para identificar o final...
+    // ... de envio do arquivo):
+    send(client_socket, random_check, random_check_lenght + 2, 0);
+    // Obs.: na conversão de string para char array o tamanho da string é sempre 1 a menos...
+    // ... e para enviar no socket deve-se colocar o tamanho do char array + 1.
+    bytes_received = recv(client_socket, receive_buffer, LEN, 0);
+
+    if(strcmp(receive_buffer, random_check) != 0){
+        return 1;
+    }
 
     for(string x : list){
-        length = x.length();
-        char *send_buffer = new char[length + 1];
+        memset(receive_buffer, 0, LEN);
+        memset(send_buffer, 0, LEN);
+
+        // (3.1) Copia a string para o buffer de envio:
+        word_length = x.length();
         strcpy(send_buffer, x.c_str());
 
-        bytes_received = recv(client_socket, recv_buffer, 100, 0);
+        // (3.2) Envia a string:
+        send(client_socket, send_buffer, word_length + 2, 0);
+        // Obs.: na conversão de string para char array o tamanho da string é sempre 1 a menos...
+        // ... e para enviar no socket deve-se colocar o tamanho do char array + 1.
+
+        // (3.3) Verifica se o cliente já recebeu e está esperando a próxima mensagem, isto é,...
+        // ... espera recebe a palavra "waiting" do cliente:
+        bytes_received = recv(client_socket, receive_buffer, LEN, 0);
         if(bytes_received == 0){
             return 1;
         }
-        else if(strcmp(recv_buffer, "waiting") == 0){
-            send(client_socket, send_buffer, length + 1, 0);
+        else if(strcmp(receive_buffer, "waiting") == 0){
+            continue;
         }
     }
+    send(client_socket, random_check, random_check_lenght + 2, 0);
+    // Obs.: na conversão de string para char array o tamanho da string é sempre 1 a menos...
+    // ... e para enviar no socket deve-se colocar o tamanho do char array + 1.
     return 0;
 }
 
-int getThreadId(pthread_t *threads){
-    // (1) Antes de se executar essa função deve ser se bloqueado o mutex sobre...
-    // ... os vetores de ids:
+int getThreadId(pthread_t *threads, int client_socket){
+    // (0) Antes de se executar essa função deve ser se bloqueado o mutex sobre...
+    // ... os vetores de ids e client sockets.
+
+    // (1) O client socket deve-ser colocado no vetor de client sockets em uso:
+    in_use_client_sockets.push_back(client_socket);
 
     if(in_use_thread_ids.size() == 0){
-        pthread_mutex_unlock(&mtx_thread_info);
         in_use_thread_ids.push_back(2);
         return 2;
     }
     else if(free_thread_ids.size() == 0){
         int last = in_use_thread_ids.back();
         in_use_thread_ids.push_back(last+1);
-        pthread_mutex_unlock(&mtx_thread_info);
         return last+1;
     }
    
     int last_free = free_thread_ids.back();
-    
     pthread_join(threads[last_free], NULL);
     
     free_thread_ids.pop_back();
@@ -352,12 +514,141 @@ int getElementIndex(vector<int> &A, int n){
     return -1;
 }
 
-vector<string> getTokens(string phrase, char delimiter){
-    stringstream command(phrase);
-    string token;
-    vector<string> tokens;
-    while(getline(command, token, delimiter)){
-        tokens.push_back(token);
+FILE *existsFile(char path[],char file_name[]){
+    // (1) Cria um char array contendo o path concatenado com o nome do arquivo:
+    char file_path[strlen(file_name) + strlen(path) + 1];
+    // Obs.: o tamanho do char array deve-ser o número de caracteres + 1 (provavelmente pois termina...
+    // ... com char "\0").
+    strcpy(file_path, path);
+    strcat(file_path, file_name);
+
+    FILE *fptr;
+    fptr = fopen(file_path, "rb");
+    return fptr;
+}
+
+FILE *openFile(char path[], char file_name[]){
+    // (1) Cria um char array contendo o path concatenado com o nome do arquivo:
+    char file_path[strlen(file_name) + strlen(path) + 1];
+    // Obs.: o tamanho do char array deve-ser o número de caracteres + 1 (provavelmente pois termina...
+    // ... com char "\0").
+    strcpy(file_path, server_dir);
+    strcat(file_path, file_name);
+
+    FILE *fptr;
+    fptr = fopen(file_path, "wb");
+    return fptr;
+}
+
+int getUpload(int client_socket, FILE *fptr){
+
+    // (1) Cria buffers de envio e recebimento:
+    char receive_buffer[LEN];
+    memset(receive_buffer, 0, LEN);
+    int bytes_received;
+
+    // (1) Cria número aleatório para sinalização fim do envio:
+    char random_check[11];
+    // Obs.: a constante RAND_MAX tem 10 dígitos.
+    int random_num = rand();
+    sprintf(random_check, "%d", random_num);
+    int random_check_len = strlen(random_check);
+
+    // (2) Envia e recebe o número aleatório:
+    send(client_socket, random_check, 11, 0);
+    bytes_received = recv(client_socket, receive_buffer, LEN, 0);
+    if(strcmp(random_check, receive_buffer) != 0){
+        return 1;
     }
-    return tokens;
+
+    // (3) Envia "waiting" para o cliente:
+    send(client_socket, "waiting", sizeof("waiting"), 0);
+    
+    while(true){
+        // (4.1) Limpa o buffer:
+        memset(receive_buffer, LEN, 0);
+        // (4.2) Recebe um pedaço do arquivo:
+        bytes_received = recv(client_socket, receive_buffer, LEN, 0);
+        // (4.3) Verifica se o pedaço do arquivo é na verdade o número aleatório...
+        // ... ou se é vazio:
+        if(strcmp(receive_buffer, random_check) == 0){
+            break;
+        }
+        else if(bytes_received == 0){
+            return 1;
+        }
+        // (4.4) Escreve o pedaço do arquivo:
+        fwrite(receive_buffer, sizeof(char), bytes_received, fptr);
+        // (4.5) Envia "waiting" para o cliente:
+        send(client_socket, "waiting", sizeof("waiting"), 0);
+    }
+
+    return 0;
+}
+
+int sendDownload(int client_socket, FILE *fptr){
+
+    // (0) Cria buffers de envio e recebimento:
+    char receive_buffer[LEN];
+    memset(receive_buffer, 0, LEN);
+    int bytes_received;
+
+    // (1) Espera "waiting" após ter enviado "Yes":
+    bytes_received = recv(client_socket, receive_buffer, LEN, 0);
+    if(bytes_received == 0 or strcmp(receive_buffer, "waiting") != 0){
+        return 1;
+    }
+    memset(receive_buffer, 0, LEN);
+
+    // (2) Cria número aleatório para sinalização fim do envio:
+    char random_check[11];
+    // Obs.: a constante RAND_MAX tem 10 dígitos.
+    int random_num = rand();
+    sprintf(random_check, "%d", random_num);
+    int random_check_len = strlen(random_check);
+
+    // (3) Envia e recebe o número aleatório:
+    send(client_socket, random_check, 11, 0);
+    bytes_received = recv(client_socket, receive_buffer, LEN, 0);
+    if(strcmp(random_check, receive_buffer) != 0){
+        return 1;
+    }
+
+     // (4) Cria buffer para o arquivo:
+    char send_buffer[256];
+    int read_size;
+
+    while(true){
+        // (4.1) Limpa os buffers:
+        memset(receive_buffer, 0, LEN);
+        memset(send_buffer, 0, LEN);
+
+        read_size = fread(send_buffer, sizeof(char), 256, fptr);
+        send(client_socket, send_buffer, read_size, 0);
+        
+        // (4.2) Se o número de bytes lido é menor que o tamanho do buffer significa que se chegou ao final do arquivo:
+        if(read_size < 256){
+            break;
+        }
+
+        // (4.3) Espera mensagem "waiting" para continuar a enviar:
+        bytes_received = recv(client_socket, receive_buffer, LEN, 0);
+        if(strcmp(receive_buffer, "waiting") != 0 || bytes_received == 0){
+            return 1;
+        }
+    }
+
+    // (5) Limpa os buffers:
+    memset(receive_buffer, 0, LEN);
+    memset(send_buffer, 0, LEN);
+
+    // (6) Espera mensagem "waiting" para terminar de enviar:
+    bytes_received = recv(client_socket, receive_buffer, LEN, 0);
+    if(strcmp(receive_buffer, "waiting") != 0 || bytes_received == 0){
+        return 1;
+    }
+
+    // (7) Envia o número aleatório para sinalizar fim do envio:
+    send(client_socket, random_check, random_check_len + 1, 0);
+    return 0;
 }

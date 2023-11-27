@@ -10,15 +10,19 @@
 #include <regex>
 #include <dirent.h>
 #include <errno.h>
+#include <pthread.h>
 
 using namespace std;
 #define LEN 4096
+#define NUM_THREADS 20
 
 int receiveListOfStrings(vector<string> &listResponse, int my_socket);
+int getDownload(int my_socket, FILE *fptr);
 int sendFile(int my_socket, FILE *fptr);
 int getFileSize(FILE *fptr);
-int getDownload(int my_socket, FILE *fptr);
 int checkPath(char path[]);
+
+void *performanceTest(void *arg);
 
 FILE *existsFile(char path[],char file_name[]);
 FILE *openFile(char path[], char file_name[]);
@@ -30,6 +34,8 @@ regex list_pattern{"list[ ]*"};
 regex exit_pattern{"exit[ ]*"};
 regex invalid_file{"[. ]+"};
 char client_dir[] = "/home/bruno/REC/Trabalho (Arpa-Inet)/ClientFiles/";
+
+pthread_barrier_t barrier;
 
 char *discoverIPv4(char *url, const char *port){
     // (1) Estrutura para salvar os endereços de IP 
@@ -73,12 +79,31 @@ char *discoverIPv4(char *url, const char *port){
 }
 
 int main(){
+    pthread_t threads[NUM_THREADS];
+    pthread_barrier_init(&barrier, NULL, (unsigned int) NUM_THREADS);
+    for (int i = 0; i < NUM_THREADS ; i++){
+        pthread_create(&threads[i], NULL, performanceTest, (void *) &i);
+    }
+    for (int i = 0; i < NUM_THREADS ; i++){
+        pthread_join(threads[i], NULL);
+    }
+    exit(0);
+}
+
+void *performanceTest(void *arg){
+
+    int *t;
+    t = (int *) arg;
+    int id = *t;
+
+    cout << " (Thread = " << id << ") - " << "Ready to start!\n"; 
+    cout.clear();
+    pthread_barrier_wait(&barrier);
 
     // (1) Criar um socket:
     int my_socket = socket(AF_INET, SOCK_STREAM, 0);
     if(my_socket == -1){
         perror("[-] Could not create socket :(");
-        return EXIT_FAILURE;
     }
 
     // (2) Aqui criamos a struct com o endereço do servidor:
@@ -104,7 +129,6 @@ int main(){
     // (3) Conectar com o servidor:
     if(connect(my_socket, (sockaddr *)&server_address, sizeof(server_address)) == -1){
         perror("[-] Cant connect to the server");
-        return EXIT_FAILURE;
     }
 
     // (4) Comunicação com o servidor:
@@ -112,19 +136,20 @@ int main(){
     char send_buffer[LEN];
     int msg_len;
 
+    int downloads_num = 1;
+
     while (true)
     {
         memset(receive_buffer, 0, LEN);
         memset(send_buffer, 0, LEN);
 
-        // (4.1) Enviando uma mensagem para o servidor:
-        cout << "[+] Type something to the server: ";
-
         // (4.2) Converte a entrada de string para um array de char:
-        string temp;
-        getline(cin, temp);
-        strcpy(send_buffer, temp.c_str());
-        cin.clear();
+        strcpy(send_buffer, "download morgan.txt ClientFiles/");
+        downloads_num--;
+
+        if(downloads_num <= 0){
+            strcpy(send_buffer, "exit");
+        }
 
         // (4.5) Verificar se a entrada é um comando de upload:
         if(regex_match(send_buffer, upload_pattern)){
@@ -142,6 +167,7 @@ int main(){
             }
             else {
                 cout << "Tried to upload non existing file." << endl;
+                cout.clear();
             }
             continue;
         }
@@ -171,6 +197,7 @@ int main(){
             // (4.6.3) Se o caminho é inválido não envia o comando ao servidor:
             if(checkPath(path) == 1){
                 cout << "Invalid path." << endl;
+                cout.clear();
                 continue;
             }
             
@@ -180,7 +207,7 @@ int main(){
 
             if(strcmp(receive_buffer, "Yes") == 0){
                 FILE *fptr = openFile(path, file_name);
-                getDownload(my_socket, fptr);
+                int flag = getDownload(my_socket, fptr);
                 fclose(fptr);
             }
             else {
@@ -217,8 +244,8 @@ int main(){
     }
 
     close(my_socket);
-    cout << "[+] Connection closed." << endl;
-    return EXIT_SUCCESS;    
+    cout << "[+]" << "Thread " << id << " connection closed" << endl;
+    pthread_exit(NULL);    
 }
 
 string convertToString(char *array, int size){

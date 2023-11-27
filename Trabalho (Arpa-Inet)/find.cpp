@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <string.h>
 #include <string>
+#include <stdlib.h>
 #include <bits/stdc++.h>
 
 using namespace std;
@@ -22,27 +23,42 @@ std::istream& expect(std::istream& in)
     return in;
 }
 
+char regex_upload[] = "upload [a-zA-Z_] [a-zA-Z_0-9]*\\.[a-zA-Z0-9]+";
+char regex_download[] = "download [^].[a-zA-Z0-9]+ [^]+";
+
 int main(void){
 
-    char temp[] = "a /home/bruno/REC/Trabalho (Arpa-Inet)/find.cpp \\";
-    // getline(cin, temp);
-    // stringstream command(temp);
-    // string token;
-    // vector<string> tokens;
-    // while(getline(command, token, ',')){
-    //     tokens.push_back(token);
+    // char send_buffer[] = "download size.txt /home/bruno/REC/Trabalho (Arpa-Inet)/ClientFiles/";
+
+    // char command[sizeof("download")];
+    // char file_name[256];
+    // char file_ext[256];
+    // char path[256];
+    // sscanf(send_buffer, "%s %[^.]%[^ ] %[^\n]", command, file_name, file_ext, path);
+
+    // cout << file_ext << endl;
+
+    // return 0;
+
+    FILE *fptr;
+    fptr = fopen("ClientFiles/unnamed.jpg", "rb");
+
+    FILE *copy_fptr;
+    copy_fptr = fopen("ClaientFiles/unnamed_copy.jpg", "wb");
+
+    cout << copy_fptr << endl;
+
+    // int read_size;
+    // char send_buffer[10];
+
+    // while(true){
+    //     read_size = fread(send_buffer, sizeof(char), 10, fptr);
+    //     cout << read_size << endl;
+    //     fwrite(send_buffer, sizeof(char), read_size, copy_fptr);
+    //     if(read_size < 10) break;
     // }
-    // cout << tokens.size() << endl;
 
-    char temp1[100];
-    char temp2[100];
-
-    sscanf(temp, "%s %[^\n]", temp1, temp2);
-
-    cout << temp1 << endl;
-    cout << temp2 << endl;
     return 0;
-
 
     struct addrinfo* res = NULL;
     getaddrinfo("0.tcp.sa.ngrok.io", "19664", 0, &res);
