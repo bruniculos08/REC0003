@@ -14,7 +14,7 @@
 #include <regex>
 #include <bits/stdc++.h>
 
-// g++ server.cpp -pthread -lstdc++fs -o server && ./server
+// g++ server.cpp -pthread -o server && ./server
 
 using namespace std;
 
@@ -32,28 +32,28 @@ int sendDownload(int client_socket, FILE *fptr);
 FILE *existsFile(char path[], char file_name[]);
 FILE *openFile(char path[], char file_name[]);
 
-regex upload_pattern{"upload [^/]+"};
-regex delete_pattern{"delete [^/]+"};
-regex download_pattern{"download [^/]+[.][a-zA-Z0-9]+ [^]+"};
-regex list_pattern{"list[ ]*"};
-regex exit_pattern{"exit[ ]*"};
-regex invalid_file{"[. ]+"};
-char server_dir[] = "/home/bruno/REC/Trabalho (Arpa-Inet)/ServerFiles/";
-
 string convertToString(char *array, int size);
 vector<string> listDir(char dir[]);
 
-pthread_mutex_t mtx_thread_info; 
-
 #define LEN 4096
-#define MAX_THREADS_NUM 20
-// threads_flag serve para comunicação entre as threads (ainda não utilizada):
-int threads_flag = 0;
-int connection_flag = 0;
+#define PACKET 1024
+#define MAX_THREADS_NUM 500
 
-vector<int> in_use_thread_ids;
-vector<int> in_use_client_sockets;
-vector<int> free_thread_ids;
+regex point_pattern{"[. ]+"};
+regex list_pattern{"list[ ]*"};
+regex exit_pattern{"exit[ ]*"};
+regex upload_pattern{"upload [^/]+"};
+regex delete_pattern{"delete [^/]+"};
+regex shutdown_pattern{"shutdown[ ]*"};
+regex download_pattern{"download [^/]+[.][a-zA-Z0-9]+ [^]+"};
+
+vector<int> threads_used;
+vector<int> sockets_used;
+vector<int> free_threads;
+
+pthread_mutex_t mtx_thread_info;
+
+char server_dir[LEN];
 
 struct thread_arg{
     int id;
@@ -69,14 +69,18 @@ int main(){
     pthread_t threads[MAX_THREADS_NUM];
     int rc;
 
-    // Obs.: o id 0 será sempre da thread listenCommands (e não precisa ser listado) e o id 1 da thread initServer.
+    cout << "[+] Choose the server dir (ex.: my_folder/): " << flush;
+    string temp;
+    getline(cin, temp);
+    strcpy(server_dir, temp.c_str());
+    cin.clear();
 
     pthread_mutex_lock(&mtx_thread_info);
     
     rc = pthread_create(&threads[0], NULL, listenCommands, (void *) threads);
 
-    // in_use_thread_ids.push_back(1);
     rc = pthread_create(&threads[1], NULL, initServer, (void *) threads);
+    // Obs.: o id 0 será sempre da thread listenCommands e o id 1 da thread initServer.
     
     pthread_mutex_unlock(&mtx_thread_info);
 
@@ -97,15 +101,17 @@ void *initServer(void *arg){
     // (1) Criar um socket:
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if(server_socket == -1){
-        perror("[-] Could not create socket :( \n");
+        cout << "[-] Could not create socket" << endl;
+        close(server_socket);
+        pthread_cancel(threads[0]);
+        pthread_exit(0);
     }
 
     pthread_mutex_lock(&mtx_thread_info);
 
-    in_use_client_sockets.push_back(server_socket);
+    sockets_used.push_back(server_socket);
 
     pthread_mutex_unlock(&mtx_thread_info);
-
 
     // (2) Vincular (Bind) o socket a um IP e uma porta:
     sockaddr_in server;
@@ -116,17 +122,18 @@ void *initServer(void *arg){
     // (2.3) inet_pton() converte um endereço de formato em texto ("localhost" ou "127.0.0.1") para seu formato em...
     // ... binário e armazena no buffer passado como parâmetro (server.sin_addr):
     inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
-    // inet_pton(AF_INET, "0.0.0.0", &server.sin_addr);
 
+    // (2.4) Associa o número de socket a estrutura de dados sockaddr respectiva:
     if(bind(server_socket, (sockaddr*) &server, sizeof(server)) == -1){
-        perror("\n[-] Could not bind IP/port :( \n");
+        cout << "\n[-] Could not bind IP/port" << endl;
         pthread_cancel(threads[0]);
         pthread_exit(NULL);
     }
-
     // (3) Faz com que o socket possa aceitar um determinado número de conexões:
     if(listen(server_socket, SOMAXCONN) == -1){
-        perror("[-] Could not start listening :( \n");
+        cout << "\n[-] Could not start listening" << endl;
+        pthread_cancel(threads[0]);
+        pthread_exit(NULL);
     }
 
     sockaddr_in client;
@@ -135,45 +142,48 @@ void *initServer(void *arg){
 
     while(true){
 
-        // O vetor in_use_thread_ids não está sendo limpado de maneira correta:
+        // (4) Verifica se o número máximo de threads foi alcançado:
         pthread_mutex_lock(&mtx_thread_info);
-        if(in_use_thread_ids.size() > MAX_THREADS_NUM){
-            cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões (" << in_use_thread_ids.size() << ") !" << endl;
+        if(threads_used.size() > MAX_THREADS_NUM){
+            cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões (" << threads_used.size() << ") !" << endl;
             pthread_mutex_unlock(&mtx_thread_info);
             continue;
         }
         pthread_mutex_unlock(&mtx_thread_info);
 
-        // (5) Aceitar uma conexação:
+
         // (5.1) Criando um endereço de socket para o cliente:
         struct thread_arg *info = (struct thread_arg *)malloc(sizeof(thread_arg));
+        // (5.2) Esperando uma conexação:
         int client_socket = accept(server_socket, (sockaddr *)&info->client, &info->client_size);
 
-        info->client_socket = client_socket;
-
         if(client_socket == -1){
-            perror("[-] Problem on accepting a connection");
+            cout << "[-] Problem on accepting a connection" << endl;
+            close(client_socket);
+            free(info);
+            continue;
         }
         else{
-            // (5.2) Aqui falta o mutex para colocar no vetor o id da thread e cuidar com o index menos 1 na função run:
+            // (5.3) Aqui falta o mutex para colocar no vetor o id da thread e cuidar com o index menos 1 na função run:
+            cout << "it is a deadlock (line 168), client socket " << client_socket << endl;
             pthread_mutex_lock(&mtx_thread_info);
 
+            info->client_socket = client_socket;
+            cout << "it is inside a deadlock? (line 168), client socket " << client_socket << endl;
             info->id = getThreadId(threads, client_socket);
             rc = pthread_create(&threads[info->id], NULL, runClient, (void *) info);
 
+            cout << "it is not a deadlock (line 168), client socket " << client_socket << endl;
             pthread_mutex_unlock(&mtx_thread_info);
         }
-
     }
-
     pthread_mutex_lock(&mtx_thread_info);
 
-    int index = getElementIndex(in_use_client_sockets, server_socket);
-    in_use_client_sockets.erase(in_use_client_sockets.begin() + index);
+    int index = getElementIndex(sockets_used, server_socket);
+    sockets_used.erase(sockets_used.begin() + index);
     close(server_socket);
 
     pthread_mutex_unlock(&mtx_thread_info);
-
     pthread_exit(NULL);
 }
 
@@ -196,48 +206,43 @@ void *runClient(void *arg){
     int BUFFER_SIZE = 4096;
     char buffer[BUFFER_SIZE];
     while(true){
-        // (2) Limpando o buffer para recebimento de mensagem:
+        // (1) Limpando o buffer para recebimento de mensagem:
         memset(buffer, 0, BUFFER_SIZE);
-        
-        // (3) Esperando uma mensagem:
+        // (2) Esperando uma mensagem:
+        cout << "Waiting to receive " << " (client socket " << client_socket << ")" << endl;
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
-
-        // (4) Erro de conexão:
+        cout << "Received: " << buffer << " (client socket " << client_socket << ")" << endl;
+        // (3) Erro de conexão:
         if(bytes_received == -1){
-            // perror("[-] Erro na conexão :(\n");
-            cout << "[-] Erro na conexão :(" << endl;
-            cout.flush();
+            cout << "[-] Erro na conexão" << endl;
             close(client_socket);
             // pthread_exit(NULL);
             break;
         }
-        // (5) Cliente desconectado:
+        // (4) Cliente desconectado:
         else if(bytes_received == 0){
             cout << "\n[+] Cliente desconectado (thread = " << id << ")" << endl;
-            cout.flush();
             break;
         }
-        // (6) Comando para desconectar:
+        // (5) Comando para desconectar:
         else if(regex_match(buffer, exit_pattern)){
-            send(client_socket, "bye bro!", sizeof("bye bro"), 0);
+            send(client_socket, "bye bro!", sizeof("bye bro!"), 0);
             break;
         }
-        // (7) Comando list:
+        // (6) Comando list:
         else if(regex_match(buffer, list_pattern)){
 
             // (7.1) Cria um vetor (lista) com os nomes dos arquivos no diretório:
-            char path[] = "/home/bruno/REC/Trabalho (Arpa-Inet)/ServerFiles/";
-            vector<string> file_list = listDir(path);
+            vector<string> file_list = listDir(server_dir);
 
             // (7.2) Envia a lista:
             int r = sendListOfString(file_list, client_socket);
             if(r == 1){
-                cout << "\n[+] Erro ao tentar enviar list (thread = " << id << ")" << endl; 
-                cout.flush();
+                cout << "\n[+] Erro ao tentar enviar list (thread = " << id << ")" << endl;
                 break;
             }
         }
-        // (8) Comando de upload:
+        // (7) Comando de upload:
         else if(regex_match(buffer, upload_pattern)){
             // (8.1) Obtém o nome do arquivo:
             char command[sizeof("update")];
@@ -249,19 +254,25 @@ void *runClient(void *arg){
             // (8.3) Chama a função para obter o upload:
             int flag = getUpload(client_socket, fptr);
             fclose(fptr);
+
+            // (8.4) Se o upload não funciou ocorreu um erro de conexão e a conexão deve...
+            // ... ser encerrada:
+            if(flag == 1) break;
         }
+        // (8) Comando de delete:
         else if(regex_match(buffer, delete_pattern)){
             // (9.1) Obtém o nome do arquivo:
             char command[sizeof("delete")];
             char file_name[256];
             sscanf(buffer, "%s %[^\n]", command, file_name);   
 
-            if(regex_match(file_name, invalid_file)){
+            // (9.2) Se o nome do arquivo a ser deletado é inválido não executa o comando:
+            if(regex_match(file_name, point_pattern)){
                 send(client_socket, "Invalid file name", sizeof("Invalid file name"), 0);
                 continue;
             }
             
-            // (9.2)
+            // (9.3)
             char file_path[strlen(file_name) + strlen(server_dir) + 1];
             strcpy(file_path, server_dir);
             strcat(file_path, file_name);
@@ -293,7 +304,7 @@ void *runClient(void *arg){
             strcat(file_name, file_ext);
 
             // (9.3) Os seguintes arquivos existem porém não são válidos, assim o servidor deve enviar "No":
-            if(regex_match(file_name, invalid_file)){
+            if(regex_match(file_name, point_pattern)){
                 send(client_socket, "No", sizeof("No"), 0);
                 continue;
             }
@@ -308,13 +319,14 @@ void *runClient(void *arg){
                 send(client_socket, "Yes", sizeof("Yes"), 0);
                 int flag = sendDownload(client_socket, fptr);
                 fclose(fptr);
+                // (9.5) Se o download falhou a conexão deve ser encerrada:
                 if(flag == 1){
                     break;
                 }
             }
         }
         else{
-            // (5.3) Reenviar mensagem para o cliente:
+            // (10) Reenviar mensagem para o cliente:
             send(client_socket, buffer, bytes_received + 1, 0);
             // Note que se no buffer a palavra contém n caracteres (ex.: "ab" contém 2 caracteres) deve-se enviar como...
             // ... n + 1 de tamanho.
@@ -322,55 +334,65 @@ void *runClient(void *arg){
     }
 
     cout << "\nBye client (thread " << id << ")" << endl;
-    cout.flush();
 
-    // (6) Antes de encerrar a thread para se alterar quaisquer estrutura que guarde informações sobre as...
+    // (11) Antes de encerrar a thread para se alterar quaisquer estrutura que guarde informações sobre as...
     // ... threads deve-se bloquer o mutex mtx_thread_info:
+    cout << "it is a deadlock (line 339), client socket " << client_socket << endl; 
     pthread_mutex_lock(&mtx_thread_info);
     int index;
 
-    // (6.1) Remove o id da thread do vetor de id's em uso:
-    index = getElementIndex(in_use_thread_ids, id);
-    in_use_thread_ids.erase(in_use_thread_ids.begin() + index);
-    free_thread_ids.push_back(id);
+    cout << "it is inside the deadlock? (line 339), client socket " << client_socket << endl; 
+    // (11.1) Remove o id da thread do vetor de id's em uso:
+    index = getElementIndex(threads_used, id);
+    threads_used.erase(threads_used.begin() + index);
+    
+    cout << endl;
+    for(int x : free_threads){
+        cout << x << "#" << flush;
+    }
+    cout << "(client socket " << client_socket << ")" << endl;
+    cout << "adding thread " << id << " into free threads" << endl;
+    free_threads.push_back(id);
+    cout << "added thread " << id << " into free threads    (client socket " << client_socket << ")" << endl;
+    cout << endl;
+    for(int x : free_threads){
+        cout << x << "=" << flush;
+    }
+    cout << "(client socket " << client_socket << ")" << endl;
 
-    // (6.2) Remove o client socket da thread do vetor de client sockets em uso (aqui que ocorreu o problema...
+    // (11.2) Remove o client socket da thread do vetor de client sockets em uso (aqui que ocorreu o problema...
     // ... "double free or corruption (out) \nAbort" pois estava fazendo erase no vetor de id's):
+    index = getElementIndex(sockets_used, client_socket);
     close(client_socket);
-    index = getElementIndex(in_use_client_sockets, client_socket);
-    in_use_client_sockets.erase(in_use_client_sockets.begin() + index);
+    sockets_used.erase(sockets_used.begin() + index);
 
+    cout << "it is not a deadlock (line 339), client socket " << client_socket << endl; 
     pthread_mutex_unlock(&mtx_thread_info);
 
-    cout << "[+] Type some command: ";
-    cout.flush();
+    cout << "\n[+] Type some command: " << flush;
 
     pthread_exit(NULL);
 }
 
 void *listenCommands(void *arg){
 
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
     pthread_t *threads;
     threads = (pthread_t *) arg;
 
-    // (5.1) Buffer para receber comandos dentro do terminal do servidor (não utilizado):
-    int BUFFER_SIZE = 4096;
-    char command_buffer[BUFFER_SIZE];
     string command;
     
     while(true){
-        // (5.2) Limpando o buffer para recebimento de comando:
-        memset(command_buffer, 0, BUFFER_SIZE);
-        // (5.3) Esperando um comando:
-        cout << "[+] Type some command: ";
-        cout.flush();
+        // (1) Esperando um comando:
+        cout << "[+] Type some command: " << flush;
 
-        // (5.4) Recebe a entrada com string class com getline() para obter toda a entrada...
+        // (2) Recebe a entrada com string class com getline() para obter toda a entrada...
         // ... (não terminando no primeiro espaço em branco):
         getline(cin, command);
-        cin.clear();
 
-        if(command == "shutdown"){
+        // (3) Se for o comando "shutdown" desliga o servidor:
+        if(regex_match(command, shutdown_pattern)){
             pthread_mutex_lock(&mtx_thread_info);
             shutdownThreads(threads);
             pthread_mutex_unlock(&mtx_thread_info);
@@ -384,11 +406,11 @@ void *listenCommands(void *arg){
 
 int shutdownThreads(pthread_t *threads){
     int rc;
-    for(int x : in_use_client_sockets){
+    for(int x : sockets_used){
         close(x);
         cout << "Closing client socket " << x << endl;
     }
-    for(int x : in_use_thread_ids){
+    for(int x : threads_used){
         rc = pthread_cancel(threads[x]);
         cout << "Closing thread " << x << endl;
     }
@@ -418,7 +440,10 @@ vector<string> listDir(char dir[]){
     
     do{
         file_name = convertToString(r->d_name, strlen(r->d_name));
-        dir_list.push_back(file_name);
+        if(!regex_match(file_name, point_pattern)){
+            dir_list.push_back(file_name);
+        }
+        
         r = readdir(d);
     }
     while(r != NULL);
@@ -486,26 +511,60 @@ int getThreadId(pthread_t *threads, int client_socket){
     // ... os vetores de ids e client sockets.
 
     // (1) O client socket deve-ser colocado no vetor de client sockets em uso:
-    in_use_client_sockets.push_back(client_socket);
+    sockets_used.push_back(client_socket);
 
-    if(in_use_thread_ids.size() == 0){
-        in_use_thread_ids.push_back(2);
+    if(threads_used.size() <= 0 and free_threads.size() <= 0){
+        // A falta da segunda condição (a direita do 'and') estava causando deadlock pois há casos em que...
+        // ... o id 2 estava no vetor free_threads porém o vetor threads_used estava vazio, assim se criava...
+        // ... uma thread com id 2 se mantendo o id 2 no vetor free_threads o que possibilitava que outra...
+        // ... thread com id 2 fosse cria mesmo existindo o id 2 no vetor threads_used ou que a fosse colocado...
+        // ... duas vezes o id 2 no vetor free_threads.
+        threads_used.push_back(2);
         return 2;
     }
-    else if(free_thread_ids.size() == 0){
-        int last = in_use_thread_ids.back();
-        in_use_thread_ids.push_back(last+1);
+    else if(free_threads.size() <= 0){
+        // A falta da função sort() estava causa deadlock antes pois o vetor threads_used não estava ordenado,...
+        // ... assim, ao se somar 1 ao valor na última posição do vetor se obtinha o valor de id de uma thread...
+        // ... em uso (igual de outra posição do vetor threads_used).
+        for(int x : threads_used){
+            cout << x << "- " << flush;
+        }
+        cout << endl;
+        sort(threads_used.begin(), threads_used.end());
+        int last = threads_used.back();
+        threads_used.push_back(last+1);
+        cout << "becoming thread " << last+1 << endl;
         return last+1;
     }
-   
-    int last_free = free_thread_ids.back();
+
+    cout << endl;
+    for(int x : free_threads){
+        cout << x << ";" << flush;
+    }
+    cout << "(client socket " << client_socket << ")" << endl;
+
+    int last_free = free_threads.back();
+    
+    int rc = pthread_tryjoin_np(threads[last_free], NULL);
+
+    cout << "joined on thread " << last_free << " with rc = " << rc << endl;
+
     pthread_join(threads[last_free], NULL);
-    
-    free_thread_ids.pop_back();
-    in_use_thread_ids.push_back(last_free);
-    
+
+    cout << "unjoined on thread " << last_free << " with rc = " << rc << endl;
+
+    free_threads.pop_back();
+    threads_used.push_back(last_free);
+
+    cout << endl;
+    for(int x : free_threads){
+        cout << x <<  ", " << flush;
+    }
+    cout << "(client socket " << client_socket << ")" << endl;
+
     return last_free;
 }
+
 
 int getElementIndex(vector<int> &A, int n){
     for(int i = 0; i < A.size(); i++){
@@ -542,7 +601,7 @@ FILE *openFile(char path[], char file_name[]){
 
 int getUpload(int client_socket, FILE *fptr){
 
-    // (1) Cria buffers de envio e recebimento:
+    // (0) Cria buffers de envio e recebimento:
     char receive_buffer[LEN];
     memset(receive_buffer, 0, LEN);
     int bytes_received;
@@ -557,7 +616,7 @@ int getUpload(int client_socket, FILE *fptr){
     // (2) Envia e recebe o número aleatório:
     send(client_socket, random_check, 11, 0);
     bytes_received = recv(client_socket, receive_buffer, LEN, 0);
-    if(strcmp(random_check, receive_buffer) != 0){
+    if(strcmp(random_check, receive_buffer) != 0 or bytes_received == 0){
         return 1;
     }
 
@@ -615,7 +674,7 @@ int sendDownload(int client_socket, FILE *fptr){
     }
 
      // (4) Cria buffer para o arquivo:
-    char send_buffer[256];
+    char send_buffer[PACKET];
     int read_size;
 
     while(true){
@@ -623,11 +682,11 @@ int sendDownload(int client_socket, FILE *fptr){
         memset(receive_buffer, 0, LEN);
         memset(send_buffer, 0, LEN);
 
-        read_size = fread(send_buffer, sizeof(char), 256, fptr);
+        read_size = fread(send_buffer, sizeof(char), PACKET, fptr);
         send(client_socket, send_buffer, read_size, 0);
         
         // (4.2) Se o número de bytes lido é menor que o tamanho do buffer significa que se chegou ao final do arquivo:
-        if(read_size < 256){
+        if(read_size < PACKET){
             break;
         }
 
