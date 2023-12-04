@@ -14,6 +14,8 @@
 #include <sys/time.h>
 #include <gnuplot-iostream.h>
 
+// g++ script.cpp -pthread -lboost_iostreams -o script && ./script
+
 using namespace std;
 
 #define LEN 4096
@@ -50,23 +52,20 @@ char csv_file[] = "Results/performance.csv";
 
 int main(){
 
-    threads_max = 10;
-    downloads_num = 10;
-    int interval = 1;
+    threads_max = 500;
+    downloads_num = 500;
+    int interval = 50;
 
+    Gnuplot gp("gnuplot");
+    gp << "set title 'Tempo para " << downloads_num << " downloads com número variável de threads'\n";
 
-    char title[256];
-    sscanf(title, "set title 'Tempo para %i downloads com número variável de threads'\n", &downloads_num);
-
-    // Gnuplot gp("gnuplot");
-    // gp << title;
-
-    // vector<pair<double, double>> points;
+    vector<pair<double, double>> points;
+    pthread_t threads[threads_max];
 
     for (int i = 1; i <= threads_max; i+=interval){
         threads_num = i;
         time_sum = 0;
-        pthread_t threads[threads_num];
+
 
         pthread_barrier_init(&barrier, NULL, (unsigned int) threads_num);
         for (int j = 0; j < threads_num ; j++){
@@ -79,14 +78,26 @@ int main(){
         }
         pthread_barrier_destroy(&barrier);
 
-        // points.push_back(make_pair((double) i, time_sum/((double) i)) );
+        points.push_back(make_pair((double) i, time_sum/((double) i)) );
+        if(threads_num == 1) threads_num = 0;
     }
 
-    // gp << "plot '-' with lines title 'points'\n";
-    // gp << "set term pngcairo\n";
-    // gp << "set output\n";
+    gp << "set terminal 'png'\n";
+    gp << "set output \"ServerFiles/graphic-better_server.png\"\n";
+    // gp << "set output \"ServerFiles/graphic-server.png\"\n";
+
+    gp << "set xlabel \"number of threads\"\n";
+    gp << "set ylabel \"time in millisecond\"\n";
+    gp << "set grid\n";
+
+    gp << "plot '-' with lines title 'points'\n";
+    gp.send1d(points);
+
     // gp << "replot\n";
-    // gp << "set output\n";
+    // gp << "set term x11\n";
+
+    // cout << "\n[-]Type any buttom to exit\n";
+    // cin.get();
     
     exit(0);
 }
@@ -163,8 +174,6 @@ void *perform(void *arg){
         } 
         else strcpy(send_buffer, "download morgan.txt ClientFiles/");
 
-        cout << "Send (Thread" << id << "): " << send_buffer << endl;
-
         // (8) Verificar se a entrada é um comando de upload:
         if(regex_match(send_buffer, upload_pattern)){
             // (8.1) Coloca os argumentos do comando upload em variáveis:
@@ -227,7 +236,6 @@ void *perform(void *arg){
             
             // (10.4) Verifica se o arquivo existe no servidor:
             send(my_socket, send_buffer, strlen(send_buffer) + 1, 0);
-            cout << "Waiting 'Yes' response, thread " << id << endl;
             msg_len = recv(my_socket, receive_buffer, LEN, 0);
 
             // (10.5) Tenta fazer download do arquivo:
@@ -279,6 +287,11 @@ void *perform(void *arg){
             break;
         }
         cout << "[+] Server answer: " << receive_buffer << " [invalid sintax or not a command]" << endl;
+    }
+
+    if(gettimeofday(&tv_fim, NULL) != 0){
+        cout << "[-] Error at gettimeofday()" << endl;
+        pthread_exit(NULL);
     }
 
     // (14) Calcula a diferenca entre os tempos, em usec:

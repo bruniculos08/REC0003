@@ -14,7 +14,7 @@
 #include <regex>
 #include <bits/stdc++.h>
 
-// g++ server.cpp -pthread -o server && ./server
+// g++ better_server.cpp -pthread -o better_server && ./better_server
 
 using namespace std;
 
@@ -47,9 +47,9 @@ regex delete_pattern{"delete [^/]+"};
 regex shutdown_pattern{"shutdown[ ]*"};
 regex download_pattern{"download [^/]+[.][a-zA-Z0-9]+ [^]+"};
 
-vector<int> threads_used;
-vector<int> sockets_used;
-vector<int> free_threads;
+multiset<int> threads_used;
+multiset<int> sockets_used;
+multiset<int> free_threads;
 
 pthread_mutex_t mtx_thread_info;
 
@@ -116,7 +116,7 @@ void *initServer(void *arg){
 
     pthread_mutex_lock(&mtx_thread_info);
 
-    sockets_used.push_back(server_socket);
+    sockets_used.insert(server_socket);
 
     pthread_mutex_unlock(&mtx_thread_info);
 
@@ -184,8 +184,11 @@ void *initServer(void *arg){
     }
     pthread_mutex_lock(&mtx_thread_info);
 
-    int index = getElementIndex(sockets_used, server_socket);
-    sockets_used.erase(sockets_used.begin() + index);
+    // int index = getElementIndex(sockets_used, server_socket);
+    // sockets_used.erase(sockets_used.begin() + index);
+    // close(server_socket);
+
+    sockets_used.erase(sockets_used.find(server_socket));
     close(server_socket);
 
     pthread_mutex_unlock(&mtx_thread_info);
@@ -341,18 +344,15 @@ void *runClient(void *arg){
     // (11) Antes de encerrar a thread para se alterar quaisquer estrutura que guarde informações sobre as...
     // ... threads deve-se bloquer o mutex mtx_thread_info:
     pthread_mutex_lock(&mtx_thread_info);
-    int index;
 
     // (11.1) Remove o id da thread do vetor de id's em uso:
-    index = getElementIndex(threads_used, id);
-    threads_used.erase(threads_used.begin() + index);
-    free_threads.push_back(id);
+    threads_used.erase(threads_used.find(id));
+    free_threads.insert(id);
 
     // (11.2) Remove o client socket da thread do vetor de client sockets em uso (aqui que ocorreu o problema...
     // ... "double free or corruption (out) \nAbort" pois estava fazendo erase no vetor de id's):
-    index = getElementIndex(sockets_used, client_socket);
     close(client_socket);
-    sockets_used.erase(sockets_used.begin() + index);
+    sockets_used.erase(sockets_used.find(client_socket));    
 
     pthread_mutex_unlock(&mtx_thread_info);
 
@@ -498,7 +498,8 @@ int getThreadId(pthread_t *threads, int client_socket){
     // ... os vetores de ids e client sockets.
 
     // (1) O client socket deve-ser colocado no vetor de client sockets em uso:
-    sockets_used.push_back(client_socket);
+    // sockets_used.push_back(client_socket);
+    sockets_used.insert(client_socket);
 
     if(threads_used.size() <= 0 and free_threads.size() <= 0){
         // A falta da segunda condição (a direita do 'and') estava causando deadlock pois há casos em que...
@@ -506,23 +507,33 @@ int getThreadId(pthread_t *threads, int client_socket){
         // ... uma thread com id 2 se mantendo o id 2 no vetor free_threads o que possibilitava que outra...
         // ... thread com id 2 fosse cria mesmo existindo o id 2 no vetor threads_used ou que a fosse colocado...
         // ... duas vezes o id 2 no vetor free_threads.
-        threads_used.push_back(2);
+        // threads_used.push_back(2);
+        threads_used.insert(2);
         return 2;
     }
     else if(free_threads.size() <= 0){
         // A falta da função sort() estava causa deadlock antes pois o vetor threads_used não estava ordenado,...
         // ... assim, ao se somar 1 ao valor na última posição do vetor se obtinha o valor de id de uma thread...
         // ... em uso (igual de outra posição do vetor threads_used).
-        sort(threads_used.begin(), threads_used.end());
-        int last = threads_used.back();
-        threads_used.push_back(last+1);
+        // sort(threads_used.begin(), threads_used.end());
+        // int last = threads_used.back();
+        // threads_used.push_back(last+1);
+
+        int last = *threads_used.rbegin();
+        threads_used.insert(last + 1);
         return last+1;
     }
 
-    int last_free = free_threads.back();
+    // int last_free = free_threads.back();
+    // pthread_join(threads[last_free], NULL);
+    // free_threads.pop_back();
+    // threads_used.push_back(last_free);
+
+    int last_free = *free_threads.rbegin();
     pthread_join(threads[last_free], NULL);
-    free_threads.pop_back();
-    threads_used.push_back(last_free);
+    free_threads.erase(*free_threads.rbegin());
+    threads_used.insert(last_free);
+
     return last_free;
 }
 
