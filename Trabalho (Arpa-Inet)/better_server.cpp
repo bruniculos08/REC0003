@@ -220,14 +220,16 @@ void *runClient(void *arg){
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
         // (3) Erro de conexão:
         if(bytes_received == -1){
-            cout << "[-] Erro na conexão" << endl;
+            cout << "\n[-] Connection error" << endl;
+            cout << "[+] Type some command: " << flush;
             close(client_socket);
             // pthread_exit(NULL);
             break;
         }
         // (4) Cliente desconectado:
         else if(bytes_received == 0){
-            cout << "\n[+] Cliente desconectado (thread = " << id << ")" << endl;
+            cout << "\n[+] Client disconected (thread = " << id << ")" << endl;
+            cout << "[+] Type some command: " << flush;
             break;
         }
         // (5) Comando para desconectar:
@@ -441,26 +443,28 @@ vector<string> listDir(char dir[]){
 
 int sendListOfString(vector<string> &list, int client_socket){
 
-    // (0) Cria o char array com a string de número aleatório:
-    string random_check_string = to_string(rand());
-    int random_check_lenght = random_check_string.length();
-    char random_check[random_check_lenght + 1];
-    strcpy(random_check, random_check_string.c_str());
+    // (0) Coloca o número de arquivos em uma string:
+    int names_num = list.size();
+    int len = snprintf(NULL, 0, "%d", names_num);
+    char num[len+1];
+    snprintf(num, len+1, "%d", names_num);
 
     // (1) Cria os buffers:
     int word_length;
     int bytes_received;
     char *receive_buffer = new char[LEN];
     char *send_buffer = new char[LEN];
+    memset(receive_buffer, 0, LEN);
+    memset(send_buffer, 0, LEN);
         
-    // (2) Envia e recebe o número aleatório (este número ira servir para identificar o final...
-    // ... de envio do arquivo):
-    send(client_socket, random_check, random_check_lenght + 2, 0);
+    // (2) Envia o número de arquivos/nomes:
+    send(client_socket, num, len + 1, 0);
     // Obs.: na conversão de string para char array o tamanho da string é sempre 1 a menos...
     // ... e para enviar no socket deve-se colocar o tamanho do char array + 1.
     bytes_received = recv(client_socket, receive_buffer, LEN, 0);
 
-    if(strcmp(receive_buffer, random_check) != 0){
+    // (3) Recebe devolta o número de arquivos/nomes:
+    if(bytes_received == 0 or strcmp(receive_buffer, num) != 0){
         return 1;
     }
 
@@ -487,7 +491,6 @@ int sendListOfString(vector<string> &list, int client_socket){
             continue;
         }
     }
-    send(client_socket, random_check, random_check_lenght + 2, 0);
     // Obs.: na conversão de string para char array o tamanho da string é sempre 1 a menos...
     // ... e para enviar no socket deve-se colocar o tamanho do char array + 1.
     return 0;
@@ -498,8 +501,7 @@ int getThreadId(pthread_t *threads, int client_socket){
     // ... os vetores de ids e client sockets.
 
     // (1) O client socket deve-ser colocado no vetor de client sockets em uso:
-    // sockets_used.push_back(client_socket);
-    sockets_used.insert(client_socket);
+     sockets_used.insert(client_socket);
 
     if(threads_used.size() <= 0 and free_threads.size() <= 0){
         // A falta da segunda condição (a direita do 'and') estava causando deadlock pois há casos em que...
@@ -507,7 +509,6 @@ int getThreadId(pthread_t *threads, int client_socket){
         // ... uma thread com id 2 se mantendo o id 2 no vetor free_threads o que possibilitava que outra...
         // ... thread com id 2 fosse cria mesmo existindo o id 2 no vetor threads_used ou que a fosse colocado...
         // ... duas vezes o id 2 no vetor free_threads.
-        // threads_used.push_back(2);
         threads_used.insert(2);
         return 2;
     }
@@ -515,19 +516,10 @@ int getThreadId(pthread_t *threads, int client_socket){
         // A falta da função sort() estava causa deadlock antes pois o vetor threads_used não estava ordenado,...
         // ... assim, ao se somar 1 ao valor na última posição do vetor se obtinha o valor de id de uma thread...
         // ... em uso (igual de outra posição do vetor threads_used).
-        // sort(threads_used.begin(), threads_used.end());
-        // int last = threads_used.back();
-        // threads_used.push_back(last+1);
-
         int last = *threads_used.rbegin();
         threads_used.insert(last + 1);
         return last+1;
     }
-
-    // int last_free = free_threads.back();
-    // pthread_join(threads[last_free], NULL);
-    // free_threads.pop_back();
-    // threads_used.push_back(last_free);
 
     int last_free = *free_threads.rbegin();
     pthread_join(threads[last_free], NULL);
@@ -536,7 +528,6 @@ int getThreadId(pthread_t *threads, int client_socket){
 
     return last_free;
 }
-
 
 int getElementIndex(vector<int> &A, int n){
     for(int i = 0; i < A.size(); i++){

@@ -22,6 +22,7 @@ void *runClient(void *arg);
 void *initServer(void *arg);
 void *listenCommands(void *arg);
 
+int getFileSize(FILE *fptr);
 int getThreadId(pthread_t *threads, int client_socket);
 int shutdownThreads(pthread_t *threads);
 int getElementIndex(vector<int> &A, int n);
@@ -37,7 +38,7 @@ vector<string> listDir(char dir[]);
 
 #define LEN 4096
 #define PACKET 1024
-#define MAX_THREADS_NUM 500
+#define MAX_THREADS_NUM 10000
 
 regex point_pattern{"[. ]+"};
 regex list_pattern{"list[ ]*"};
@@ -217,14 +218,16 @@ void *runClient(void *arg){
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
         // (3) Erro de conexão:
         if(bytes_received == -1){
-            cout << "[-] Erro na conexão" << endl;
+            cout << "\n[-] Connection error" << endl;
+            cout << "[+] Type some command: " << flush;
             close(client_socket);
             // pthread_exit(NULL);
             break;
         }
         // (4) Cliente desconectado:
         else if(bytes_received == 0){
-            cout << "\n[+] Cliente desconectado (thread = " << id << ")" << endl;
+            cout << "\n[+] Client disconected (thread = " << id << ")" << endl;
+            cout << "[+] Type some command: " << flush;
             break;
         }
         // (5) Comando para desconectar:
@@ -336,7 +339,7 @@ void *runClient(void *arg){
         }
     }
 
-    cout << "\nBye client (thread " << id << ")" << flush;
+    // cout << "\nBye client (thread " << id << ")" << flush;
 
     // (11) Antes de encerrar a thread para se alterar quaisquer estrutura que guarde informações sobre as...
     // ... threads deve-se bloquer o mutex mtx_thread_info:
@@ -356,7 +359,7 @@ void *runClient(void *arg){
 
     pthread_mutex_unlock(&mtx_thread_info);
 
-    cout << "\n[+] Type some command: " << flush;
+    // cout << "\n[+] Type some command: " << flush;
 
     pthread_exit(NULL);
 }
@@ -441,26 +444,28 @@ vector<string> listDir(char dir[]){
 
 int sendListOfString(vector<string> &list, int client_socket){
 
-    // (0) Cria o char array com a string de número aleatório:
-    string random_check_string = to_string(rand());
-    int random_check_lenght = random_check_string.length();
-    char random_check[random_check_lenght + 1];
-    strcpy(random_check, random_check_string.c_str());
+    // (0) Coloca o número de arquivos em uma string:
+    int names_num = list.size();
+    int len = snprintf(NULL, 0, "%d", names_num);
+    char num[len+1];
+    snprintf(num, len+1, "%d", names_num);
 
     // (1) Cria os buffers:
     int word_length;
     int bytes_received;
     char *receive_buffer = new char[LEN];
     char *send_buffer = new char[LEN];
+    memset(receive_buffer, 0, LEN);
+    memset(send_buffer, 0, LEN);
         
-    // (2) Envia e recebe o número aleatório (este número ira servir para identificar o final...
-    // ... de envio do arquivo):
-    send(client_socket, random_check, random_check_lenght + 2, 0);
+    // (2) Envia o número de arquivos/nomes:
+    send(client_socket, num, len + 1, 0);
     // Obs.: na conversão de string para char array o tamanho da string é sempre 1 a menos...
     // ... e para enviar no socket deve-se colocar o tamanho do char array + 1.
     bytes_received = recv(client_socket, receive_buffer, LEN, 0);
 
-    if(strcmp(receive_buffer, random_check) != 0){
+    // (3) Recebe devolta o número de arquivos/nomes:
+    if(bytes_received == 0 or strcmp(receive_buffer, num) != 0){
         return 1;
     }
 
@@ -487,7 +492,6 @@ int sendListOfString(vector<string> &list, int client_socket){
             continue;
         }
     }
-    send(client_socket, random_check, random_check_lenght + 2, 0);
     // Obs.: na conversão de string para char array o tamanho da string é sempre 1 a menos...
     // ... e para enviar no socket deve-se colocar o tamanho do char array + 1.
     return 0;
@@ -526,6 +530,13 @@ int getThreadId(pthread_t *threads, int client_socket){
     return last_free;
 }
 
+// Retorna o tamanho do arquivo em bytes:
+int getFileSize(FILE *fptr){
+    fseek(fptr, 0L, SEEK_END);
+    int size = ftell(fptr);
+    rewind(fptr);
+    return size;
+}
 
 int getElementIndex(vector<int> &A, int n){
     for(int i = 0; i < A.size(); i++){
