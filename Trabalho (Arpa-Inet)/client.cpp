@@ -34,6 +34,7 @@ regex shutdown_pattern{"shutdown[ ]*"};
 regex download_pattern{"download [^/]+[.][a-zA-Z0-9]+ [^]+"};
 
 char client_dir[LEN];
+char ipv4[16];
 
 char *discoverIPv4(char *url, const char *port){
     // (1) Estrutura para salvar os endereços de IP 
@@ -78,10 +79,17 @@ char *discoverIPv4(char *url, const char *port){
 
 int main(){
 
+    // 25.67.63.48
+
     cout << "[+] Choose the client dir (ex.: my_folder/): " << flush;
     string temp;
     getline(cin, temp);
     strcpy(client_dir, temp.c_str());
+    cin.clear();
+
+    cout << "[+] Choose the ipv4 (ex.: 127.0.0.1): " << flush;
+    getline(cin, temp);
+    strcpy(ipv4, temp.c_str());
     cin.clear();
 
     label_restart_connection:
@@ -107,7 +115,7 @@ int main(){
 
     // (2.4) inet_pton() converte um endereço de formato em texto ("localhost" ou "127.0.0.1") para seu formato em...
     // ... binário e armazena no buffer passado como parâmetro (server.sin_addr):
-    inet_pton(AF_INET, "127.0.0.1", &server_address.sin_addr);
+    inet_pton(AF_INET, ipv4, &server_address.sin_addr);
 
     // (3) Conectar com o servidor:
     if(connect(my_socket, (sockaddr *)&server_address, sizeof(server_address)) == -1){
@@ -176,7 +184,7 @@ int main(){
         }
         // (9) Verificar se a entrada é um comando de download:
         else if(regex_match(send_buffer, download_pattern)){
-            // (9.1) Coloca os argumentos do comando upload em variáveis:
+            // (9.1) Coloca os argumentos do comando download em variáveis:
             char command[sizeof("download")];
             char file_init[256];
             char file_ext[256];

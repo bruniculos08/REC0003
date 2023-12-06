@@ -37,8 +37,8 @@ string convertToString(char *array, int size);
 vector<string> listDir(char dir[]);
 
 #define LEN 4096
-#define PACKET 1024
-#define MAX_THREADS_NUM 10000
+#define PACKET 4096
+#define MAX_THREADS_NUM 500
 
 regex point_pattern{"[. ]+"};
 regex list_pattern{"list[ ]*"};
@@ -48,8 +48,8 @@ regex delete_pattern{"delete [^/]+"};
 regex shutdown_pattern{"shutdown[ ]*"};
 regex download_pattern{"download [^/]+[.][a-zA-Z0-9]+ [^]+"};
 
-vector<int> threads_used;
 vector<int> sockets_used;
+vector<int> threads_used;
 vector<int> free_threads;
 
 pthread_mutex_t mtx_thread_info;
@@ -148,15 +148,21 @@ void *initServer(void *arg){
     sockaddr_in client;
     socklen_t client_size = sizeof(client);
     int rc;
+    int f = 0;
 
     while(true){
 
         // (4) Verifica se o número máximo de threads foi alcançado:
         pthread_mutex_lock(&mtx_thread_info);
         if(threads_used.size() > MAX_THREADS_NUM){
-            cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões (" << threads_used.size() << ") !" << endl;
+            if(f == 1){
+                cout << "[-] Número máximo de threads atingido, não é possível abrir mais conexões (" << threads_used.size() << ") !" << endl;
+                f = 0;
+            }
             pthread_mutex_unlock(&mtx_thread_info);
             continue;
+        } else {
+            f = 1;
         }
         pthread_mutex_unlock(&mtx_thread_info);
 
@@ -578,40 +584,35 @@ int getUpload(int client_socket, FILE *fptr){
     memset(receive_buffer, 0, LEN);
     int bytes_received;
 
-    // (1) Cria número aleatório para sinalização fim do envio:
-    char random_check[11];
-    // Obs.: a constante RAND_MAX tem 10 dígitos.
-    int random_num = rand();
-    sprintf(random_check, "%d", random_num);
-    int random_check_len = strlen(random_check);
+    // (1) Envia "waiting" para o cliente:
+    send(client_socket, "waiting", sizeof("waiting"), 0);
 
-    // (2) Envia e recebe o número aleatório:
-    send(client_socket, random_check, 11, 0);
+    // (2) Recebe e reenvia o tamanho do arquivo:
     bytes_received = recv(client_socket, receive_buffer, LEN, 0);
-    if(strcmp(random_check, receive_buffer) != 0 or bytes_received == 0){
+    if(bytes_received == 0){
         return 1;
     }
 
-    // (3) Envia "waiting" para o cliente:
-    send(client_socket, "waiting", sizeof("waiting"), 0);
-    
+    send(client_socket, receive_buffer, bytes_received + 1, 0);
+
+    int file_size = atoi(receive_buffer);
+    int position = 0;
+
     while(true){
         // (4.1) Limpa o buffer:
         memset(receive_buffer, LEN, 0);
         // (4.2) Recebe um pedaço do arquivo:
         bytes_received = recv(client_socket, receive_buffer, LEN, 0);
-        // (4.3) Verifica se o pedaço do arquivo é na verdade o número aleatório...
-        // ... ou se é vazio:
-        if(strcmp(receive_buffer, random_check) == 0){
-            break;
-        }
-        else if(bytes_received == 0){
+        // (4.3) Verifica se o pedaço do arquivo é vazio:
+        if(bytes_received == 0){
             return 1;
         }
         // (4.4) Escreve o pedaço do arquivo:
         fwrite(receive_buffer, sizeof(char), bytes_received, fptr);
+        position += bytes_received;
         // (4.5) Envia "waiting" para o cliente:
-        send(client_socket, "waiting", sizeof("waiting"), 0);
+        if(file_size > position) send(client_socket, "waiting", sizeof("waiting"), 0);
+        else break;
     }
 
     return 0;
@@ -631,17 +632,19 @@ int sendDownload(int client_socket, FILE *fptr){
     }
     memset(receive_buffer, 0, LEN);
 
-    // (2) Cria número aleatório para sinalização fim do envio:
-    char random_check[11];
-    // Obs.: a constante RAND_MAX tem 10 dígitos.
-    int random_num = rand();
-    sprintf(random_check, "%d", random_num);
-    int random_check_len = strlen(random_check);
+    // (2) Obtém tamanho do arquivo:
+    int size = getFileSize(fptr);
+    char num[7];
+    // int len = snprintf(NULL, 0, "%d", size);
+    // char num[len+1];
+    // snprintf(num, len+1, "%i", size);
+    sscanf(num, "%i", &size);
+    int len = strlen(num);
 
-    // (3) Envia e recebe o número aleatório:
-    send(client_socket, random_check, 11, 0);
+    // (3) Envia e recebe o tamanho do arquivo:
+    send(client_socket, num, len+1, 0);
     bytes_received = recv(client_socket, receive_buffer, LEN, 0);
-    if(strcmp(random_check, receive_buffer) != 0){
+    if(bytes_received == 0 or strcmp(num, receive_buffer) != 0){
         return 1;
     }
 
@@ -673,13 +676,5 @@ int sendDownload(int client_socket, FILE *fptr){
     memset(receive_buffer, 0, LEN);
     memset(send_buffer, 0, LEN);
 
-    // (6) Espera mensagem "waiting" para terminar de enviar:
-    bytes_received = recv(client_socket, receive_buffer, LEN, 0);
-    if(strcmp(receive_buffer, "waiting") != 0 || bytes_received == 0){
-        return 1;
-    }
-
-    // (7) Envia o número aleatório para sinalizar fim do envio:
-    send(client_socket, random_check, random_check_len + 1, 0);
     return 0;
 }

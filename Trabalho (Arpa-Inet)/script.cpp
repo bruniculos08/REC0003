@@ -68,7 +68,6 @@ int main(){
         threads_num = i;
         time_sum = 0;
 
-
         pthread_barrier_init(&barrier, NULL, (unsigned int) threads_num);
         for (int j = 0; j < threads_num ; j++){
             int *id = (int *)malloc(sizeof(int));
@@ -152,16 +151,15 @@ void *perform(void *arg){
     char send_buffer[LEN];
     int msg_len;
 
-    // (5) Criando estrutura para marcação do tempo e iniciando a marcação:
-    // struct timeval tv_ini, tv_fim;
-    // unsigned long time_diff, sec_diff, usec_diff, msec_diff;
-
     int count = downloads_num;
 
-    // if(gettimeofday(&tv_ini, NULL) != 0){
-    //     cout << "[-] Error at gettimeofday()" << endl;
-    //     pthread_exit(NULL);
-    // }
+    // (5) Criando estrutura para marcação do tempo e iniciando a marcação:
+    struct timeval tv_ini, tv_fim;
+    unsigned long time_diff, sec_diff, usec_diff, msec_diff;
+    if(gettimeofday(&tv_ini, NULL) != 0){
+        cout << "[-] Error at gettimeofday()" << endl;
+        pthread_exit(NULL);
+    }
 
     auto start = high_resolution_clock::now();
 
@@ -186,6 +184,8 @@ void *perform(void *arg){
             char command[sizeof("update")];
             char file_name[256];
             sscanf(send_buffer, "%s %[^\n]", command, file_name);
+
+            cout << "Started download" << endl;
 
             FILE *fptr = existsFile(client_dir, file_name);
 
@@ -295,10 +295,10 @@ void *perform(void *arg){
         cout << "[+] Server answer: " << receive_buffer << " [invalid sintax or not a command]" << endl;
     }
 
-    // if(gettimeofday(&tv_fim, NULL) != 0){
-    //     cout << "[-] Error at gettimeofday()" << endl;
-    //     pthread_exit(NULL);
-    // }
+    if(gettimeofday(&tv_fim, NULL) != 0){
+        cout << "[-] Error at gettimeofday()" << endl;
+        pthread_exit(NULL);
+    }
 
     // (14) Calcula a diferenca entre os tempos, em usec:
     // time_diff = (1000000L*tv_fim.tv_sec + tv_fim.tv_usec) - (1000000L*tv_ini.tv_sec + tv_ini.tv_usec);
@@ -311,11 +311,12 @@ void *perform(void *arg){
     // msec_diff = time_diff / 1000;
 
     auto stop = high_resolution_clock::now();
+
     auto duration = duration_cast<milliseconds>(stop - start);
 
     pthread_mutex_lock(&time_info);
 
-    // time_sum += (double) sec_diff;
+    // time_sum += (double) msec_diff;
     time_sum += (double) duration.count();
 
     pthread_mutex_unlock(&time_info);
