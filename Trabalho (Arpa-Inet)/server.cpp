@@ -634,12 +634,9 @@ int sendDownload(int client_socket, FILE *fptr){
 
     // (2) Obtém tamanho do arquivo:
     int size = getFileSize(fptr);
-    char num[7];
-    // int len = snprintf(NULL, 0, "%d", size);
-    // char num[len+1];
-    // snprintf(num, len+1, "%i", size);
-    sscanf(num, "%i", &size);
-    int len = strlen(num);
+    int len = snprintf(NULL, 0, "%d", size);
+    char num[len+1];
+    snprintf(num, len+1, "%i", size);
 
     // (3) Envia e recebe o tamanho do arquivo:
     send(client_socket, num, len+1, 0);
