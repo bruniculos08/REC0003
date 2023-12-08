@@ -10,7 +10,6 @@
 #include <regex>
 #include <dirent.h>
 #include <errno.h>
-#include <stdlib.h>
 
 using namespace std;
 #define LEN 4096
@@ -34,7 +33,6 @@ regex shutdown_pattern{"shutdown[ ]*"};
 regex download_pattern{"download [^/]+[.][a-zA-Z0-9]+ [^]+"};
 
 char client_dir[LEN];
-char ipv4[16];
 
 char *discoverIPv4(char *url, const char *port){
     // (1) Estrutura para salvar os endereços de IP 
@@ -79,17 +77,10 @@ char *discoverIPv4(char *url, const char *port){
 
 int main(){
 
-    // 25.67.63.48
-
     cout << "[+] Choose the client dir (ex.: my_folder/): " << flush;
     string temp;
     getline(cin, temp);
     strcpy(client_dir, temp.c_str());
-    cin.clear();
-
-    cout << "[+] Choose the ipv4 (ex.: 127.0.0.1): " << flush;
-    getline(cin, temp);
-    strcpy(ipv4, temp.c_str());
     cin.clear();
 
     label_restart_connection:
@@ -115,7 +106,7 @@ int main(){
 
     // (2.4) inet_pton() converte um endereço de formato em texto ("localhost" ou "127.0.0.1") para seu formato em...
     // ... binário e armazena no buffer passado como parâmetro (server.sin_addr):
-    inet_pton(AF_INET, ipv4, &server_address.sin_addr);
+    inet_pton(AF_INET, "127.0.0.1", &server_address.sin_addr);
 
     // (3) Conectar com o servidor:
     if(connect(my_socket, (sockaddr *)&server_address, sizeof(server_address)) == -1){
@@ -141,8 +132,6 @@ int main(){
         getline(cin, temp);
         strcpy(send_buffer, temp.c_str());
         cin.clear();
-
-        if(temp.size() == 0) continue;
 
         // (7) Verificar se a entrada é um comando de upload:
         if(regex_match(send_buffer, upload_pattern)){
@@ -184,7 +173,7 @@ int main(){
         }
         // (9) Verificar se a entrada é um comando de download:
         else if(regex_match(send_buffer, download_pattern)){
-            // (9.1) Coloca os argumentos do comando download em variáveis:
+            // (9.1) Coloca os argumentos do comando upload em variáveis:
             char command[sizeof("download")];
             char file_init[256];
             char file_ext[256];
@@ -280,24 +269,26 @@ int receiveListOfStrings(vector<string> &words, int my_socket){
     int msg_len;
 
     // (1) Recebe o número aleatório e reenvia:
-    int len = recv(my_socket, receive_buffer, LEN, 0); 
-    if(len == 0){
+    int random_check_len = recv(my_socket, receive_buffer, LEN, 0);
+    if(random_check_len == 0){
         return 1;
     }
-    char num[len + 1];
-    strcpy(num, receive_buffer);
 
     // (2) Reenvia o número aleatório:
-    send(my_socket, num, len + 1, 0);
+    send(my_socket, receive_buffer, random_check_len + 1, 0);
 
-    int names_num = atoi(num);
-    for(int i = 0; i < names_num; i++){
+    // (3) Copia o número aleatório para um buffer especial:
+    char random_check[LEN];
+    memset(random_check, 0, LEN);
+    strcpy(random_check, receive_buffer);
+
+    while(true){
 
         // (4) Recebe a primeira mensagem (char array):
         msg_len = recv(my_socket, receive_buffer, LEN, 0);
 
-        // (5) Verifica se a mensagem (char array) é vazia:
-        if(msg_len == 0){
+        // (5) Verifica se a mensagem (char array) é o número aleatório ou se é vazia:
+        if(strcmp(receive_buffer, random_check) == 0 || msg_len == 0){
             break;
         }
 
@@ -346,30 +337,23 @@ int sendUpdate(int my_socket, FILE *fptr){
     memset(receive_buffer, 0, LEN);
     int msg_len;
 
-    // (2) Espera waiting do servidor:
-    msg_len = recv(my_socket, receive_buffer, LEN, 0);
-    if(msg_len == 0 or strcmp(receive_buffer, "waiting") != 0){
+    // (2) Recebe e envia número aleatório:
+    char random_check[11];
+    int random_check_len = recv(my_socket, random_check, 11, 0);
+    if(random_check_len == 0){
         return 1;
     }
-    memset(receive_buffer, 0, LEN);
-
-    // (3) Obtém tamanho do arquivo:
-    int size = getFileSize(fptr);
-    int len = snprintf(NULL, 0, "%d", size);
-    char num[len+1];
-    snprintf(num, len+1, "%d", size);
-
-    // (3) Envia tamanho do arquivo e recebe novamente:
-    send(my_socket, num, len + 1, 0);
-    msg_len = recv(my_socket, receive_buffer, LEN, 0);
-    if(msg_len == 0 or strcmp(receive_buffer, num) != 0){
-        return 1;
-    }
-    memset(receive_buffer, 0, LEN);
+    send(my_socket, random_check, 11, 0);
 
     // (3) Cria buffer para o arquivo:
     char send_buffer[PACKET];
     int read_size;
+
+    // (4) Espera mensagem "waiting" para continuar a enviar:
+    msg_len = recv(my_socket, receive_buffer, LEN, 0);
+    if(strcmp(receive_buffer, "waiting") != 0 || msg_len == 0){
+            return 1;
+    }
 
     while(true){
 
@@ -396,6 +380,14 @@ int sendUpdate(int my_socket, FILE *fptr){
     memset(receive_buffer, 0, LEN);
     memset(send_buffer, 0, LEN);
 
+    // (9) Espera mensagem "waiting" para terminar de enviar:
+    msg_len = recv(my_socket, receive_buffer, LEN, 0);
+    if(strcmp(receive_buffer, "waiting") != 0 || msg_len == 0){
+        return 1;
+    }
+
+    // (10) Envia o número aleatório gerado inicialmente indicando fim do envio:
+    send(my_socket, random_check, random_check_len + 1, 0);
     return 0;
 }
 
@@ -416,36 +408,30 @@ int getDownload(int my_socket, FILE *fptr){
     // (1) Enviar "waiting" após receber "Yes":
     send(my_socket, "waiting", sizeof("waiting"), 0);
 
-    // (2) Recebe o tamanho do arquivo:
-    int len = recv(my_socket, receive_buffer, LEN, 0);
-    if(len == 0){
+    // (2) Recebe e envia número aleatório:
+    char random_check[11];
+    int random_check_len = recv(my_socket, random_check, 11, 0);
+    if(random_check_len == 0){
         cout << "[+] Connection problem, stop download" << endl;
         cout.clear();
         return 1;
     }
-    char num[len + 1];
-    strcpy(num, receive_buffer);
+    // (3) Reenvia o número aleatório:
+    send(my_socket, random_check, 11, 0);
 
-    cout << "Download de tamanho " << num << " bytes" << endl;
-
-    // (3) Reenvia o tamanho do arquivo:
-    send(my_socket, num, len + 1, 0);
-
-    int file_size = atoi(num);
-    int position = 0;
     while(true){
         // (4) Limpa o buffer:
         memset(receive_buffer, LEN, 0);
         // (5) Recebe um pedaço do arquivo:
         msg_len = recv(my_socket, receive_buffer, LEN, 0);
-        // (6) Verifica se o pedaço do arquivo é vazio:
-        if(msg_len == 0) return 1;
+        // (6) Verifica se o pedaço do arquivo é na verdade o número aleatório...
+        // ... ou se é vazio:
+        if(strcmp(receive_buffer, random_check) == 0) break;
+        else if(msg_len == 0) return 1;
         // (7) Escreve o pedaço do arquivo:
         fwrite(receive_buffer, sizeof(char), msg_len, fptr);
-        position += msg_len;
         // (8) Envia "waiting" para o servidor:
-        if(file_size > position) send(my_socket, "waiting", sizeof("waiting"), 0);
-        else break;
+        send(my_socket, "waiting", sizeof("waiting"), 0);
     }
 
     return 0;
